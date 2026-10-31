@@ -63,8 +63,25 @@ class IslandService : Service(), IslandView.Listener {
     private var redockAfterCollapse = false
     private var typing = false // true only while the window holds focus for the keyboard
     private val handler = Handler(Looper.getMainLooper())
-    private val idleCollapse = Runnable { if (CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
+    private val idleCollapse = Runnable { if (!busy && CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
     private val autoHide = Runnable { hideIsland() }
+
+    // Brain (spec §10): one background thread, one request per message.
+    private val brainThread = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val brain = Brain(OkHttpTransport(), log = DebugLog::add)
+    private val memory = ConvoMemory()
+    private lateinit var vault: KeyVault
+    private lateinit var brainSettings: BrainSettings
+    private var busy = false
+    private var dots = 0
+    private val thinkingDots = object : Runnable {
+        override fun run() {
+            if (!busy) return
+            dots = dots % 3 + 1
+            reply.text = "💭 " + ".".repeat(dots)
+            handler.postDelayed(this, 380)
+        }
+    }
 
     // Spring that carries the pill to where it settles after a drag (magnet or clamp).
     private val settleSpring = MorphSpring()
@@ -101,6 +118,8 @@ class IslandService : Service(), IslandView.Listener {
             return
         }
         prefs = IslandPrefs(this)
+        vault = KeyVault(this)
+        brainSettings = BrainSettings(this)
         current = this
         showIsland()
         registerReceiver(screenReceiver, IntentFilter().apply {
@@ -127,6 +146,7 @@ class IslandService : Service(), IslandView.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        brainThread.shutdownNow()
         Choreographer.getInstance().removeFrameCallback(settleFrame)
         if (root != null) runCatching { unregisterReceiver(screenReceiver) }
         removeWindow()
@@ -559,15 +579,59 @@ class IslandService : Service(), IslandView.Listener {
 
     private fun onSend() {
         val text = input.text.toString().trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty() || busy) return // one request per message; wait for the answer
         input.text.clear()
+        busy = true
+        handler.removeCallbacks(idleCollapse)
         reply.setTextColor(0xFFFFFFFF.toInt())
-        // The brain (Gemini) arrives in step 1.5; until then Mouou says so honestly.
-        reply.text = "مازلت ما نجمش نخمّم توا… المخ يجي في الخطوة الجاية أيمون"
         reply.scrollTo(0, 0)
+        dots = 0
+        handler.post(thinkingDots)
         island.hop()
+        island.setThinking(true)
+
+        val key = vault.load()
+        val models = brainSettings.models
+        val useSearch = brainSettings.useSearch
+        val facts = brainSettings.facts()
+        val history = memory.history()
+        val userTurn = SystemPrompt.userTurn(text, screenAvailable = false) // screen awareness comes in step 1.6
+        val prompt = SystemPrompt.withContext(SystemPrompt.mouou(), nowInTunis(), facts.all, foregroundApp = null)
+        brainThread.execute {
+            val result = runCatching { brain.ask(key, models, prompt, history, userTurn, useSearch) }
+                .getOrElse { e -> DebugLog.add("brain crash: ${e.javaClass.simpleName}"); Brain.Result.Failure(BrainError.SERVER) }
+            handler.post { showResult(userTurn, result, facts) }
+        }
+    }
+
+    private fun showResult(userTurn: String, result: Brain.Result, facts: Facts) {
+        if (root == null) return
+        busy = false
+        handler.removeCallbacks(thinkingDots)
+        island.setThinking(false)
+        when (result) {
+            is Brain.Result.Answer -> {
+                memory.add(true, userTurn)
+                memory.add(false, result.reply.rawJson.ifBlank { result.reply.reply })
+                if (result.reply.remember.isNotBlank() && facts.remember(result.reply.remember)) brainSettings.saveFacts(facts)
+                reply.setTextColor(0xFFFFFFFF.toInt())
+                reply.text = result.reply.reply
+                if (result.reply.emotion in HAPPY_EMOTIONS) island.hop()
+            }
+            is Brain.Result.Failure -> {
+                reply.setTextColor(0xFFFF9F1C.toInt())
+                reply.text = result.error.darija
+            }
+        }
+        reply.scrollTo(0, 0)
         island.glanceAtReply()
         restartIdleTimer()
+    }
+
+    private fun nowInTunis(): String {
+        val f = java.text.SimpleDateFormat("EEEE d MMMM yyyy، HH:mm", java.util.Locale.forLanguageTag("ar-TN"))
+        f.timeZone = java.util.TimeZone.getTimeZone("Africa/Tunis")
+        return f.format(java.util.Date())
     }
 
     /** Take window focus only while typing (spec §5.1); otherwise stay NOT_FOCUSABLE. */
@@ -671,6 +735,7 @@ class IslandService : Service(), IslandView.Listener {
         private const val NOTIFICATION_ID = 1
         private const val CHAT_IDLE_MS = 25_000L
         private const val HIDE_AFTER_COLLAPSE_MS = 450L
+        private val HAPPY_EMOTIONS = setOf("happy", "laugh", "excited", "love", "wink")
         private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
         private const val ACTION_TOGGLE = "com.glteam.teambubbles.TOGGLE"
         private const val ACTION_SETTINGS_CHANGED = "com.glteam.teambubbles.SETTINGS_CHANGED"

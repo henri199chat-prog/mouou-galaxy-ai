@@ -63,6 +63,7 @@ class IslandView(context: Context) : View(context) {
     private val location = IntArray(2)
     private var replyGlanceUntil = 0L
     private var lookTargetX = 0f
+    private var thinking = false
     private val visibility = VisibilityAnim()
     private var anchorX = Float.NaN // where the pill shrinks to when hiding (the camera), screen px
     private var anchorY = Float.NaN
@@ -180,6 +181,12 @@ class IslandView(context: Context) : View(context) {
         }
     }
 
+    /** Thinking face (spec §11): eyes up and to the right, a slow bob, while the brain works. */
+    fun setThinking(on: Boolean) {
+        thinking = on
+        kick()
+    }
+
     /** After a reply arrives Mouou looks at it for a moment (up and to his right). */
     fun glanceAtReply() {
         replyGlanceUntil = SystemClock.uptimeMillis() + REPLY_GLANCE_MS
@@ -212,10 +219,13 @@ class IslandView(context: Context) : View(context) {
             landed = true
             bounce.land(now) // soft squash when the card has finished dropping
         }
-        val glancingAtReply = !attentive && now < replyGlanceUntil
-        val goal = if (attentive || glancingAtReply) 1f else 0f
-        lookTargetX = if (glancingAtReply) REPLY_LOOK_X else FIELD_LOOK_X
-        lookTargetY = if (glancingAtReply) REPLY_LOOK_Y else FIELD_LOOK_Y
+        val glancingAtReply = !attentive && !thinking && now < replyGlanceUntil
+        val goal = if (attentive || thinking || glancingAtReply) 1f else 0f
+        when {
+            thinking -> { lookTargetX = THINK_LOOK_X; lookTargetY = THINK_LOOK_Y }
+            glancingAtReply -> { lookTargetX = REPLY_LOOK_X; lookTargetY = REPLY_LOOK_Y }
+            else -> { lookTargetX = FIELD_LOOK_X; lookTargetY = FIELD_LOOK_Y }
+        }
         attention += (goal - attention) * (frameDt / 140f).coerceAtMost(1f)
         val speed = kotlin.math.hypot(dragVx, dragVy)
         val stretchGoal = (speed / (2500f * density)).coerceAtMost(1f) * MAX_DRAG_STRETCH
@@ -362,7 +372,8 @@ class IslandView(context: Context) : View(context) {
         val breath = life.breath(now)
         val squash = bounce.squash(now)
         canvas.save()
-        canvas.translate(cx + w * bounce.offsetX(now), cy + h * bounce.offsetY(now))
+        val thinkBob = if (thinking) THINK_BOB * kotlin.math.sin(2.0 * Math.PI * (now % THINK_BOB_MS) / THINK_BOB_MS).toFloat() else 0f
+        canvas.translate(cx + w * bounce.offsetX(now), cy + h * (bounce.offsetY(now) + thinkBob))
         // Breathing and reactions squash/stretch around the bottom edge, keeping the volume constant.
         // Dragging stretches him along the movement (horizontal or vertical), keeping the volume.
         val horizontal = kotlin.math.abs(dragVx) >= kotlin.math.abs(dragVy)
@@ -483,6 +494,10 @@ class IslandView(context: Context) : View(context) {
         const val REPLY_LOOK_X = 0.07f // the reply text is to his right and higher
         const val REPLY_LOOK_Y = -0.05f
         const val REPLY_GLANCE_MS = 1200L
+        const val THINK_LOOK_X = 0.075f
+        const val THINK_LOOK_Y = -0.075f
+        const val THINK_BOB = 0.045f
+        const val THINK_BOB_MS = 1100L
         const val FRAME_SETTLE_TIMEOUT_MS = 150L
         const val CARD_RADIUS_DP = 30f
         const val CARD_PAD_DP = 12f

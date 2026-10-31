@@ -23,8 +23,8 @@ android {
         applicationId = "com.glteam.teambubbles"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "2.2.8"
+        versionCode = 22
+        versionName = "2.2.9"
     }
 
     signingConfigs {
@@ -81,4 +81,5 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303") // real org.json in JVM tests (android.jar only has stubs)
 }
