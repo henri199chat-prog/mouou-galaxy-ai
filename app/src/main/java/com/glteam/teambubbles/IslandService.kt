@@ -205,6 +205,7 @@ class IslandService : Service(), IslandView.Listener {
             setContentAlpha(0f)
         }
         removeWindow()
+        root?.alpha = 1f
         redockAfterCollapse = false
         pill = prefs.customPill(pill.width, pill.height)?.let { clamp(it) } ?: dock()
         idleFrame = pill.inflate(margin)
@@ -293,6 +294,7 @@ class IslandService : Service(), IslandView.Listener {
             gravity = Gravity.START or Gravity.TOP
             movementMethod = ScrollingMovementMethod() // long replies scroll inside; the card never grows
             isVerticalScrollBarEnabled = true
+            setOnClickListener { openAccessibilitySettings() }
         }
         input = EditText(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -431,6 +433,7 @@ class IslandService : Service(), IslandView.Listener {
 
     private fun collapseCard() {
         handler.removeCallbacks(idleCollapse)
+        root?.alpha = 1f
         setWindowTyping(false)
         island.collapse()
     }
@@ -605,38 +608,94 @@ class IslandService : Service(), IslandView.Listener {
     private fun onSend() {
         val text = input.text.toString().trim()
         if (text.isEmpty() || busy) return // one request per message; wait for the answer
+        val screen = ScreenService.instance
+        val wantScreen = brainSettings.attachScreen
+        if (wantScreen && screen == null && SystemPrompt.isAboutScreen(text)) {
+            // Asked about the screen with the screen service off: say so and offer the switch (spec §9).
+            input.text.clear()
+            showScreenOffHint()
+            return
+        }
         input.text.clear()
         busy = true
+        screenOffHint = false
         handler.removeCallbacks(idleCollapse)
         reply.setTextColor(0xFFFFFFFF.toInt())
         reply.scrollTo(0, 0)
-        dots = 0
-        handler.post(thinkingDots)
         island.hop()
-        island.setThinking(true)
+        if (wantScreen && screen != null) {
+            // Spec §9: island invisible → ~140 ms → screenshot + window text → island back → send.
+            reply.text = "👁 نشوف في الشاشة…"
+            island.setScanning(true)
+            root?.alpha = 0f
+            var delivered = false
+            fun deliver(cap: ScreenCapture?) {
+                if (delivered) return // the capture and the watchdog can both arrive: only the first counts
+                delivered = true
+                root?.alpha = 1f // never leave Mouou invisible
+                island.setScanning(false)
+                if (cap?.jpegBase64 != null) reply.text = "👁 شاف الشاشة"
+                askBrain(text, cap, ScreenService.instance?.foregroundAppLabel())
+            }
+            handler.postDelayed({
+                runCatching { screen.capture { cap -> deliver(cap) } }
+                    .onFailure { DebugLog.add("capture error: ${it.javaClass.simpleName}"); deliver(null) }
+            }, SCREEN_HIDE_MS)
+            // Watchdog: if the screenshot never answers (service switched off mid-way…), carry on without it.
+            handler.postDelayed({ if (!delivered) { DebugLog.add("capture timeout"); deliver(null) } }, CAPTURE_TIMEOUT_MS)
+        } else {
+            askBrain(text, null, screen?.foregroundAppLabel())
+        }
+    }
 
+    private fun askBrain(question: String, capture: ScreenCapture?, foregroundApp: String?) {
+        dots = 0
+        handler.postDelayed(thinkingDots, if (capture?.jpegBase64 != null) 450 else 0)
+        island.setThinking(true)
         val key = vault.load()
         val models = brainSettings.models
         val useSearch = brainSettings.useSearch
         val facts = brainSettings.facts()
         val history = memory.history()
-        val userTurn = SystemPrompt.userTurn(text, screenAvailable = false) // screen awareness comes in step 1.6
-        val prompt = SystemPrompt.withContext(SystemPrompt.mouou(), nowInTunis(), facts.all, foregroundApp = null)
+        val userTurn = if (capture != null) {
+            SystemPrompt.userTurnWithScreen(question, capture.text, capture.jpegBase64 != null)
+        } else {
+            SystemPrompt.userTurn(question, screenAvailable = false)
+        }
+        val image = capture?.jpegBase64 // kept in memory for this one request only, never stored (spec §9)
+        val prompt = SystemPrompt.withContext(SystemPrompt.mouou(), nowInTunis(), facts.all, foregroundApp)
         brainThread.execute {
-            val result = runCatching { brain.ask(key, models, prompt, history, userTurn, useSearch) }
+            val result = runCatching { brain.ask(key, models, prompt, history, userTurn, useSearch, image) }
                 .getOrElse { e -> DebugLog.add("brain crash: ${e.javaClass.simpleName}"); Brain.Result.Failure(BrainError.SERVER) }
-            handler.post { showResult(userTurn, result, facts) }
+            handler.post { showResult(question, result, facts) }
         }
     }
 
-    private fun showResult(userTurn: String, result: Brain.Result, facts: Facts) {
+    private var screenOffHint = false
+
+    private fun showScreenOffHint() {
+        screenOffHint = true
+        reply.setTextColor(0xFFFF9F1C.toInt())
+        reply.text = "🙈 رؤية الشاشة مسكّرة توا. اضغط هنا باش تشعّل «الشاشة» في إعدادات الوصول."
+        reply.scrollTo(0, 0)
+        island.glanceAtReply()
+        restartIdleTimer()
+    }
+
+    private fun openAccessibilitySettings() {
+        if (!screenOffHint) return
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        collapseCard()
+    }
+
+    private fun showResult(question: String, result: Brain.Result, facts: Facts) {
         if (root == null) return
         busy = false
         handler.removeCallbacks(thinkingDots)
         island.setThinking(false)
         when (result) {
             is Brain.Result.Answer -> {
-                memory.add(true, userTurn)
+                memory.add(true, question) // history: text only, no screen text and no image (spec §10.4)
                 memory.add(false, result.reply.rawJson.ifBlank { result.reply.reply })
                 if (result.reply.remember.isNotBlank() && facts.remember(result.reply.remember)) brainSettings.saveFacts(facts)
                 reply.setTextColor(0xFFFFFFFF.toInt())
@@ -760,6 +819,8 @@ class IslandService : Service(), IslandView.Listener {
         private const val NOTIFICATION_ID = 1
         private const val CHAT_IDLE_MS = 25_000L
         private const val HIDE_AFTER_COLLAPSE_MS = 450L
+        private const val SCREEN_HIDE_MS = 140L
+        private const val CAPTURE_TIMEOUT_MS = 3_000L
         private val HAPPY_EMOTIONS = setOf("happy", "laugh", "excited", "love", "wink")
         private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
         private const val ACTION_TOGGLE = "com.glteam.teambubbles.TOGGLE"

@@ -72,6 +72,11 @@ class BrainSettings(context: Context) {
         get() = prefs.getBoolean("search", true)
         set(v) = prefs.edit().putBoolean("search", v).apply()
 
+    /** Spec §16: "always-attach-screen (ON)": every question carries the screen when the service is on. */
+    var attachScreen: Boolean
+        get() = prefs.getBoolean("attach_screen", true)
+        set(v) = prefs.edit().putBoolean("attach_screen", v).apply()
+
     fun facts(): Facts = Facts.fromJson(prefs.getString("facts", null))
 
     fun saveFacts(f: Facts) = prefs.edit().putString("facts", f.toJson()).apply()

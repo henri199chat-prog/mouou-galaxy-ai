@@ -51,7 +51,22 @@ object SystemPrompt {
         }
     }.trim()
 
-    /** The user turn as sent: the question plus the screen-off tag until screen awareness exists. */
+    /** The user turn without the screen (screen awareness off or not allowed): carries the screen-off tag. */
     fun userTurn(question: String, screenAvailable: Boolean): String =
         if (screenAvailable) question else "$question\n$SCREEN_OFF_TAG"
+
+    /** The user turn with the screen (spec §9 prompt prefix): on-screen text, then the question, then the image note. */
+    fun userTurnWithScreen(question: String, screenText: String, hasImage: Boolean): String = buildString {
+        if (screenText.isNotBlank()) {
+            append("[النصوص اللي ظاهرة على الشاشة توا]\n").append(screenText.trim()).append("\n\n")
+        }
+        append("[آخر سؤال أيمون]: ").append(question)
+        if (hasImage) append("\n[تصويرة الشاشة اللي نشوف فيها توا مرفوقة]")
+        if (!hasImage && screenText.isBlank()) append("\n").append(SCREEN_OFF_TAG)
+    }
+
+    private val SCREEN_WORDS = Regex("شاش|تشوف|نشوف|شوف|صورة|تصويرة|اقرا|screen|écran|ecran|see|look", RegexOption.IGNORE_CASE)
+
+    /** Is the question about what is on the screen? (Used when screen awareness is off, spec §9.) */
+    fun isAboutScreen(question: String) = SCREEN_WORDS.containsMatchIn(question)
 }

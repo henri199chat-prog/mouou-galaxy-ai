@@ -67,13 +67,20 @@ object Gemini {
         useSchema: Boolean,
         useThinking: Boolean,
         maxOutputTokens: Int = 4096,
+        imageJpegBase64: String? = null,
     ): String {
         val contents = JSONArray()
         for (t in history) {
             contents.put(JSONObject().put("role", if (t.fromUser) "user" else "model")
                 .put("parts", JSONArray().put(JSONObject().put("text", t.text))))
         }
-        contents.put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", userText))))
+        val userParts = JSONArray()
+        // The screenshot travels only with this request; history never keeps images (spec §10.4).
+        if (imageJpegBase64 != null) {
+            userParts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", imageJpegBase64)))
+        }
+        userParts.put(JSONObject().put("text", userText))
+        contents.put(JSONObject().put("role", "user").put("parts", userParts))
 
         val gen = JSONObject().put("temperature", 0.8).put("maxOutputTokens", maxOutputTokens)
         if (useThinking) thinkingConfig(model)?.let { gen.put("thinkingConfig", it) }

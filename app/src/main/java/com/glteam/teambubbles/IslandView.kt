@@ -64,6 +64,9 @@ class IslandView(context: Context) : View(context) {
     private var replyGlanceUntil = 0L
     private var lookTargetX = 0f
     private var thinking = false
+    private var scanning = false
+    private val scanPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var scanRadius = Float.NaN
     private val visibility = VisibilityAnim()
     private var anchorX = Float.NaN // where the pill shrinks to when hiding (the camera), screen px
     private var anchorY = Float.NaN
@@ -194,6 +197,12 @@ class IslandView(context: Context) : View(context) {
         }
     }
 
+    /** Scanning face (spec §11): eyes down, a blue light under him, while he looks at the screen. */
+    fun setScanning(on: Boolean) {
+        scanning = on
+        kick()
+    }
+
     /** Thinking face (spec §11): eyes up and to the right, a slow bob, while the brain works. */
     fun setThinking(on: Boolean) {
         thinking = on
@@ -237,8 +246,9 @@ class IslandView(context: Context) : View(context) {
             bounce.land(now) // out of the camera: a soft little settle, like landing in place
         }
         val glancingAtReply = !attentive && !thinking && now < replyGlanceUntil
-        val goal = if (attentive || thinking || glancingAtReply) 1f else 0f
+        val goal = if (attentive || thinking || scanning || glancingAtReply) 1f else 0f
         when {
+            scanning -> { lookTargetX = 0f; lookTargetY = SCAN_LOOK_Y }
             thinking -> { lookTargetX = THINK_LOOK_X; lookTargetY = THINK_LOOK_Y }
             glancingAtReply -> { lookTargetX = REPLY_LOOK_X; lookTargetY = REPLY_LOOK_Y }
             else -> { lookTargetX = FIELD_LOOK_X; lookTargetY = FIELD_LOOK_Y }
@@ -373,6 +383,26 @@ class IslandView(context: Context) : View(context) {
         }
     }
 
+    /** Soft blue light under Mouou while he reads the screen (#5AA8FF → #BFE0FF), pulsing gently. */
+    private fun drawScanLight(canvas: Canvas, x: Float, y: Float, bodyW: Float, now: Long) {
+        val r = bodyW * 0.9f
+        if (r != scanRadius) {
+            scanRadius = r
+            scanPaint.shader = RadialGradient(
+                0f, 0f, r,
+                intArrayOf(withAlpha(0xFFBFE0FF.toInt(), 0.75f), withAlpha(0xFF5AA8FF.toInt(), 0.35f), withAlpha(0xFF5AA8FF.toInt(), 0f)),
+                floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP,
+            )
+        }
+        val pulse = 0.75f + 0.25f * kotlin.math.sin(2.0 * Math.PI * (now % 900L) / 900.0).toFloat()
+        scanPaint.alpha = (255 * pulse).toInt()
+        canvas.save()
+        canvas.translate(x, y)
+        canvas.scale(1f, 0.35f) // a flat ellipse of light on the "floor"
+        canvas.drawCircle(0f, 0f, r, scanPaint)
+        canvas.restore()
+    }
+
     /** Mouou (spec §4): rounded-square blob ≈ 1.25 : 1, white gradient, two black ovals. No mouth, no hands. */
     private fun drawMascot(canvas: Canvas, cx: Float, cy: Float, h: Float, now: Long, eyeFactor: Float = 1f) {
         val w = h * 1.25f
@@ -389,6 +419,7 @@ class IslandView(context: Context) : View(context) {
         val breath = life.breath(now)
         val squash = bounce.squash(now)
         canvas.save()
+        if (scanning) drawScanLight(canvas, cx, cy + h * 0.62f, w, now)
         val thinkBob = if (thinking) THINK_BOB * kotlin.math.sin(2.0 * Math.PI * (now % THINK_BOB_MS) / THINK_BOB_MS).toFloat() else 0f
         canvas.translate(cx + w * bounce.offsetX(now), cy + h * (bounce.offsetY(now) + thinkBob))
         // Breathing and reactions squash/stretch around the bottom edge, keeping the volume constant.
@@ -511,6 +542,7 @@ class IslandView(context: Context) : View(context) {
         const val REPLY_LOOK_X = 0.07f // the reply text is to his right and higher
         const val REPLY_LOOK_Y = -0.05f
         const val REPLY_GLANCE_MS = 1200L
+        const val SCAN_LOOK_Y = 0.08f
         const val THINK_LOOK_X = 0.075f
         const val THINK_LOOK_Y = -0.075f
         const val THINK_BOB = 0.045f

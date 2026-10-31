@@ -66,6 +66,7 @@ class Brain(
         history: List<Turn>,
         userText: String,
         useSearch: Boolean,
+        imageJpegBase64: String? = null,
     ): Result {
         val key = apiKey?.let(KeySanitizer::clean).orEmpty()
         if (key.isEmpty()) return Result.Failure(BrainError.NO_KEY)
@@ -84,7 +85,7 @@ class Brain(
                     return Result.Failure(if (errors.all { it == BrainError.QUOTA } && errors.isNotEmpty()) BrainError.QUOTA else BrainError.TIMEOUT)
                 }
                 val url = "${Gemini.BASE}/models/$model:generateContent"
-                val body = Gemini.requestBody(systemPrompt, history, userText, model, search, schema, thinking)
+                val body = Gemini.requestBody(systemPrompt, history, userText, model, search, schema, thinking, imageJpegBase64 = imageJpegBase64)
                 val response = try {
                     transport.post(url, key, body, http1)
                 } catch (e: UnknownHostException) {

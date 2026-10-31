@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
                     onSave = ::saveKey,
                     onTest = ::testKey,
                     onSearch = { brainSettings.useSearch = it; brain = brain.copy(useSearch = it) },
+                    onAttachScreen = { brainSettings.attachScreen = it; brain = brain.copy(attachScreen = it) },
                     onClearFacts = {
                         brainSettings.saveFacts(Facts())
                         brain = brain.copy(factsCount = 0)
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
         brain = brain.copy(
             keySaved = vault.has(),
             useSearch = brainSettings.useSearch,
+            attachScreen = brainSettings.attachScreen,
             factsCount = brainSettings.facts().all.size,
             models = brainSettings.models,
         )
@@ -232,6 +234,7 @@ data class BrainUi(
     val result: String = "",
     val models: List<String> = emptyList(),
     val useSearch: Boolean = true,
+    val attachScreen: Boolean = true,
     val factsCount: Int = 0,
     val showLog: Boolean = false,
     val log: String = "",
@@ -244,6 +247,7 @@ class BrainActions(
     val onSave: () -> Unit,
     val onTest: () -> Unit,
     val onSearch: (Boolean) -> Unit,
+    val onAttachScreen: (Boolean) -> Unit,
     val onClearFacts: () -> Unit,
     val onToggleLog: () -> Unit,
 )
@@ -277,6 +281,11 @@ private fun BrainSection(ui: BrainUi, a: BrainActions) {
         Switch(checked = ui.useSearch, onCheckedChange = a.onSearch)
         Text("يستعمل البحث في Google للأخبار والأسعار والطقس", color = Color.White, fontSize = 14.sp)
     }
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Switch(checked = ui.attachScreen, onCheckedChange = a.onAttachScreen)
+        Text("👁 يشوف الشاشة مع كل سؤال (يلزم «الشاشة» مشعّلة)", color = Color.White, fontSize = 14.sp)
+    }
+    Text("التصويرة تتبعث مع سؤالك برك لـ Google، وما تتسجّلش في الهاتف.", color = grey, fontSize = 12.sp)
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("حاجات يعرفها عليك: ${ui.factsCount}", color = Color.White, fontSize = 14.sp)
         if (ui.factsCount > 0) OutlinedButton(onClick = a.onClearFacts) { Text("امسحهم") }
