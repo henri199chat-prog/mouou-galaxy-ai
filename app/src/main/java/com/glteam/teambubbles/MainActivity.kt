@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -38,6 +39,8 @@ class MainActivity : ComponentActivity() {
     private var canOverlay by mutableStateOf(false)
     private var islandOn by mutableStateOf(false)
     private var accessibilityOn by mutableStateOf(false)
+    private var hideAfterMs by mutableStateOf(0L)
+    private val prefs by lazy { IslandPrefs(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,6 +58,12 @@ class MainActivity : ComponentActivity() {
                 onToggleIsland = ::toggleIsland,
                 onAccessibility = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                 onRedock = { IslandService.redock(this) },
+                hideAfterMs = hideAfterMs,
+                onHideAfter = { ms ->
+                    prefs.hideAfterMs = ms
+                    hideAfterMs = ms
+                    IslandService.settingsChanged(this)
+                },
             )
         }
     }
@@ -64,6 +73,7 @@ class MainActivity : ComponentActivity() {
         canOverlay = Settings.canDrawOverlays(this)
         islandOn = IslandService.running
         accessibilityOn = ScreenService.instance != null
+        hideAfterMs = prefs.hideAfterMs
     }
 
     private fun openOverlaySettings() {
@@ -85,6 +95,8 @@ private fun SettingsHome(
     onToggleIsland: () -> Unit,
     onAccessibility: () -> Unit,
     onRedock: () -> Unit,
+    hideAfterMs: Long,
+    onHideAfter: (Long) -> Unit,
 ) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF6A3FD0), background = Color(0xFF030308))) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -120,6 +132,23 @@ private fun SettingsHome(
                         color = Color(0xFF8E8E96), fontSize = 12.sp,
                     )
                 }
+                Text("يختفي وحدو كي ما تستعملوش بعد:", color = Color.White, fontSize = 15.sp)
+                for (row in HideAfter.CHOICES_MS.toList().chunked(3)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (ms in row) {
+                            if (ms == hideAfterMs) {
+                                Button(onClick = { onHideAfter(ms) }) { Text(HideAfter.label(ms)) }
+                            } else {
+                                OutlinedButton(onClick = { onHideAfter(ms) }) { Text(HideAfter.label(ms)) }
+                            }
+                        }
+                    }
+                }
+                Text(
+                    "كي تبدا تخدم معاه ما يختفيش. باش ترجعو: ورّي / خبّي في الإشعار، " +
+                        "ولا اضغط حذا الكاميرا إذا «الشاشة» مشعّلة. «Mouu» بالصوت تجي في المرحلة الجاية.",
+                    color = Color(0xFF8E8E96), fontSize = 12.sp,
+                )
             }
         }
     }

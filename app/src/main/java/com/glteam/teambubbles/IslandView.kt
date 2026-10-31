@@ -36,6 +36,8 @@ class IslandView(context: Context) : View(context) {
         fun onFlingUp(): Boolean
         fun onTwoFingerDrag(dx: Float, dy: Float)
         fun onTwoFingerEnd()
+        /** A tap on the hidden island's spot: show it again. */
+        fun onRevealTap()
         fun onWindowApplied()
         fun onProgress(progress: Float)
         fun onCollapsed()
@@ -61,6 +63,9 @@ class IslandView(context: Context) : View(context) {
     private val location = IntArray(2)
     private var replyGlanceUntil = 0L
     private var lookTargetX = 0f
+    private val visibility = VisibilityAnim()
+    private var anchorX = Float.NaN // where the pill shrinks to when hiding (the camera), screen px
+    private var anchorY = Float.NaN
     private var lookTargetY = 0f
     private var lastFrameMs = 0L
     private var screenOn = true
@@ -95,6 +100,21 @@ class IslandView(context: Context) : View(context) {
     private var stretch = 0f
 
     val isExpandedOrOpening get() = spring.target > 0f
+    val isHiddenOrHiding get() = visibility.target == 0f
+
+    /** Hide: eyes close, then the pill shrinks and fades into [anchorX, anchorY] (the camera). */
+    fun hideInto(ax: Float, ay: Float) {
+        anchorX = ax
+        anchorY = ay
+        visibility.hide(SystemClock.uptimeMillis())
+        kick()
+    }
+
+    /** Show again: the exact reverse of hiding. */
+    fun show() {
+        visibility.show(SystemClock.uptimeMillis())
+        kick()
+    }
     val isFingerDown get() = gestures.isFingerDown
 
     /** Closes instantly, without animation (used when the window moves to another host). */
@@ -215,6 +235,12 @@ class IslandView(context: Context) : View(context) {
 
         // Pacing (battery): every vsync while morphing, 30 fps for the idle breathing, nothing with the screen off.
         if (!isAttachedToWindow || !screenOn) return
+        val hiddenAndStill = visibility.target == 0f && !visibility.animating(now) && p == 0f
+        if (hiddenAndStill && pendingFrame == null) return // hidden: no frames at all until show()
+        if (visibility.animating(now)) {
+            postInvalidateOnAnimation()
+            return
+        }
         val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f || pendingFrame != null
         if (moving || easingAttention || bounce.active(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
@@ -234,8 +260,34 @@ class IslandView(context: Context) : View(context) {
         val idleMascotH = pill.height * 0.80f * 0.78f
 
         if (p <= 0f) {
+            val shown = visibility.value(now)
+            if (shown <= 0f) return // hidden: nothing drawn
+            val cx = shape.centerX()
+            val cy = shape.centerY()
+            canvas.save()
+            if (shown < 1f) {
+                // Shrink and fade into the camera (or into itself when no camera is known).
+                val ax = if (anchorX.isNaN()) cx else anchorX
+                val ay = if (anchorY.isNaN()) cy else anchorY
+                val scale = lerp(0.15f, 1f, shown)
+                canvas.translate(lerp(ax, cx, shown), lerp(ay, cy, shown))
+                canvas.scale(scale, scale)
+                canvas.translate(-cx, -cy)
+                val alpha = (255 * shown).toInt()
+                pillPaint.alpha = alpha
+                bodyPaint.alpha = alpha
+                bodyGlowPaint.alpha = (0x55 * shown).toInt()
+                eyePaint.alpha = alpha
+            }
             canvas.drawRoundRect(shape, radius, radius, pillPaint)
-            drawMascot(canvas, shape.centerX(), shape.centerY(), idleMascotH, now)
+            drawMascot(canvas, cx, cy, idleMascotH, now, VisibilityAnim.eyeOpenness(shown))
+            canvas.restore()
+            if (shown < 1f) {
+                pillPaint.alpha = 255
+                bodyPaint.alpha = 255
+                bodyGlowPaint.alpha = 0x55
+                eyePaint.alpha = 255
+            }
             return
         }
 
@@ -247,10 +299,12 @@ class IslandView(context: Context) : View(context) {
         spacePaint.color = blend(0xFF000000.toInt(), 0xFF030308.toInt(), pc)
         canvas.drawRect(shape, spacePaint)
 
-        // Mouou travels from the pill into the card (same object, continuous).
-        val mascotCx = lerp(pill.centerX.toFloat(), card.left + (CARD_PAD_DP + MASCOT_DP / 2) * density, pc)
-        val mascotCy = lerp(pill.centerY.toFloat(), card.centerY.toFloat(), pc)
-        val mascotH = lerp(idleMascotH, MASCOT_DP * density / 1.25f, pc)
+        // Mouou travels from the pill into the card (same object, continuous) along a soft ease-in-out:
+        // he never follows the spring's bounce sideways, so he does not seem to "run away" and come back.
+        val travel = pc * pc * (3 - 2 * pc)
+        val mascotCx = lerp(pill.centerX.toFloat(), card.left + (CARD_PAD_DP + MASCOT_DP / 2) * density, travel)
+        val mascotCy = lerp(pill.centerY.toFloat(), card.centerY.toFloat(), travel)
+        val mascotH = lerp(idleMascotH, MASCOT_DP * density / 1.25f, travel)
 
         drawCardGlow(canvas, mascotCx, mascotCy, pc)
         drawStars(canvas, now, pc)
@@ -293,7 +347,7 @@ class IslandView(context: Context) : View(context) {
     }
 
     /** Mouou (spec §4): rounded-square blob ≈ 1.25 : 1, white gradient, two black ovals. No mouth, no hands. */
-    private fun drawMascot(canvas: Canvas, cx: Float, cy: Float, h: Float, now: Long) {
+    private fun drawMascot(canvas: Canvas, cx: Float, cy: Float, h: Float, now: Long, eyeFactor: Float = 1f) {
         val w = h * 1.25f
         body.set(-w / 2, -h / 2, w / 2, h / 2)
         val corner = h * 0.42f
@@ -324,7 +378,7 @@ class IslandView(context: Context) : View(context) {
         val lookX = glance.x + (lookTargetX - glance.x) * attention
         val lookY = glance.y + (lookTargetY - glance.y) * attention
         val eyeW = w * 0.10f
-        val eyeH = (h * 0.26f * life.eyeOpenness(now)).coerceAtLeast(eyeW * 0.25f)
+        val eyeH = (h * 0.26f * life.eyeOpenness(now) * eyeFactor).coerceAtLeast(eyeW * 0.25f)
         val eyeY = body.top + h * (0.56f + lookY)
         for (dx in EYE_OFFSETS) {
             val ex = w * (dx + lookX)
@@ -409,6 +463,10 @@ class IslandView(context: Context) : View(context) {
             tapCount = 0
             bounce.shake(SystemClock.uptimeMillis())
             kick()
+        }
+        if (isHiddenOrHiding) {
+            listener?.onRevealTap()
+            return
         }
         if (!isExpandedOrOpening) listener?.onPillTap() // on the open card, empty space only counts taps
     }

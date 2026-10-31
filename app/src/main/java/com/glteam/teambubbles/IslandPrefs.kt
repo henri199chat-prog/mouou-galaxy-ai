@@ -17,7 +17,13 @@ class IslandPrefs(context: Context) {
 
     fun saveDocked() = prefs.edit().putBoolean(KEY_CUSTOM, false).apply()
 
+    /** Auto-hide after this long without use (0 = never). */
+    var hideAfterMs: Long
+        get() = prefs.getLong(KEY_HIDE_AFTER, 0L)
+        set(v) = prefs.edit().putLong(KEY_HIDE_AFTER, v).apply()
+
     private companion object {
+        const val KEY_HIDE_AFTER = "hide_after_ms"
         const val KEY_CUSTOM = "pill_custom"
         const val KEY_LEFT = "pill_left"
         const val KEY_TOP = "pill_top"

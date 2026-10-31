@@ -64,6 +64,7 @@ class IslandService : Service(), IslandView.Listener {
     private var typing = false // true only while the window holds focus for the keyboard
     private val handler = Handler(Looper.getMainLooper())
     private val idleCollapse = Runnable { if (CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
+    private val autoHide = Runnable { hideIsland() }
 
     // Spring that carries the pill to where it settles after a drag (magnet or clamp).
     private val settleSpring = MorphSpring()
@@ -110,6 +111,17 @@ class IslandService : Service(), IslandView.Listener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_REDOCK && root != null) redock()
+        if (intent?.action == ACTION_TOGGLE && root != null) {
+            when {
+                island.isHiddenOrHiding -> revealIsland()
+                !windowIsIdle || island.isExpandedOrOpening -> {
+                    collapseCard() // close the card first, then hide once it is a pill again
+                    handler.postDelayed({ hideIsland() }, HIDE_AFTER_COLLAPSE_MS)
+                }
+                else -> hideIsland()
+            }
+        }
+        if (intent?.action == ACTION_SETTINGS_CHANGED && root != null) noteActivity()
         return START_STICKY
     }
 
@@ -172,7 +184,10 @@ class IslandService : Service(), IslandView.Listener {
         island.pill = pill
         setParamsFrame(idleFrame)
         windowIsIdle = true
+        params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        island.show()
         addWindow()
+        noteActivity()
     }
 
     // ---- building the window ----
@@ -218,6 +233,7 @@ class IslandService : Service(), IslandView.Listener {
         root = rootView
         addWindow()
         running = true
+        noteActivity()
     }
 
     /** Dock: beside the camera above the status bar (accessibility host), or just below the status bar. */
@@ -293,10 +309,46 @@ class IslandService : Service(), IslandView.Listener {
             topMargin = top
         }
 
+    // ---- auto-hide (Ayman, 2026-10-31) ----
+
+    /** Any use of Mouou restarts the auto-hide countdown; it only runs while nobody is using him. */
+    private fun noteActivity() {
+        handler.removeCallbacks(autoHide)
+        val after = prefs.hideAfterMs
+        if (HideAfter.mayHide(after, cardOpen = !windowIsIdle || island.isExpandedOrOpening, typing = typing, fingerDown = island.isFingerDown)) {
+            handler.postDelayed(autoHide, after)
+        }
+    }
+
+    private fun hideIsland() {
+        handler.removeCallbacks(autoHide)
+        if (!windowIsIdle || island.isExpandedOrOpening || typing || island.isFingerDown) return // in use: never hide
+        val cam = cameraCutout()
+        island.hideInto((cam?.centerX ?: pill.centerX).toFloat(), (cam?.centerY ?: pill.centerY).toFloat())
+        if (!usingAccessibility) {
+            // Below the status bar an invisible window would block the app under it: let touches pass through.
+            // (With the accessibility host the spot beside the camera stays tappable to show Mouou again.)
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            root?.let { hostWm?.updateViewLayout(it, params) }
+        }
+    }
+
+    private fun revealIsland() {
+        if (params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0) {
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            root?.let { hostWm?.updateViewLayout(it, params) }
+        }
+        island.show()
+        noteActivity()
+    }
+
+    override fun onRevealTap() = revealIsland()
+
     // ---- open / close ----
 
     override fun onPillTap() {
         if (island.isExpandedOrOpening) return
+        handler.removeCallbacks(autoHide) // in use
         Choreographer.getInstance().removeFrameCallback(settleFrame)
         val card = IslandGeometry.cardFor(pill, screenWidth(), screenHeight(), statusBarHeight(), navBarTop(), density)
         expandedFrame = IslandGeometry.expandedWindow(pill, card, margin, screenWidth())
@@ -326,6 +378,7 @@ class IslandService : Service(), IslandView.Listener {
             return
         }
         applyFrame(idleFrame)
+        noteActivity()
         if (redockAfterCollapse) {
             redockAfterCollapse = false
             settleTo(dock())
@@ -377,15 +430,18 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     override fun onDragStart() {
+        handler.removeCallbacks(autoHide)
         Choreographer.getInstance().removeFrameCallback(settleFrame)
     }
 
     override fun onDrag(dx: Float, dy: Float) {
+        if (island.isHiddenOrHiding) return // an invisible pill is never dragged around
         if (!windowIsIdle) return // one finger on the card (or a closing card) does not move it; two fingers do
         movePillTo(pill.left + dx.toInt(), pill.top + dy.toInt())
     }
 
     override fun onDragEnd(vx: Float, vy: Float) {
+        if (island.isHiddenOrHiding) return
         if (!windowIsIdle) return
         val dock = dock()
         val target = if (IslandGeometry.shouldDock(pill, dock, density)) {
@@ -396,6 +452,7 @@ class IslandService : Service(), IslandView.Listener {
             clamp(pill).also { prefs.saveCustom(it) }
         }
         settleTo(target)
+        noteActivity()
     }
 
     private fun settleTo(target: Box) {
@@ -409,6 +466,7 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     override fun onTwoFingerDrag(dx: Float, dy: Float) {
+        if (island.isHiddenOrHiding) return
         val ix = dx.toInt()
         val iy = dy.toInt()
         if (ix == 0 && iy == 0) return
@@ -430,6 +488,8 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     override fun onTwoFingerEnd() {
+        if (island.isHiddenOrHiding) return
+        noteActivity()
         if (!windowIsIdle) {
             prefs.saveCustom(pill)
             return
@@ -446,6 +506,11 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     override fun onLongPress() {
+        if (island.isHiddenOrHiding) {
+            revealIsland()
+            return
+        }
+        noteActivity()
         buzz() // listening (STT) arrives in phase 2; for now Mouou reacts with a squash and a tick
     }
 
@@ -583,11 +648,15 @@ class IslandService : Service(), IslandView.Listener {
             NotificationChannel(CHANNEL_ID, "الجزيرة", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) },
         )
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val toggle = PendingIntent.getService(
+            this, 1, Intent(this, IslandService::class.java).setAction(ACTION_TOGGLE), PendingIntent.FLAG_IMMUTABLE,
+        )
         val notification: Notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle("Mouou Galaxy AI")
-            .setContentText("الجزيرة ظاهرة")
+            .setContentText("الجزيرة خدّامة")
             .setContentIntent(open)
+            .addAction(Notification.Action.Builder(null, "ورّي / خبّي", toggle).build())
             .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= 34) {
@@ -601,7 +670,10 @@ class IslandService : Service(), IslandView.Listener {
         private const val CHANNEL_ID = "island"
         private const val NOTIFICATION_ID = 1
         private const val CHAT_IDLE_MS = 25_000L
+        private const val HIDE_AFTER_COLLAPSE_MS = 450L
         private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
+        private const val ACTION_TOGGLE = "com.glteam.teambubbles.TOGGLE"
+        private const val ACTION_SETTINGS_CHANGED = "com.glteam.teambubbles.SETTINGS_CHANGED"
         private const val BASE_FLAGS = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -619,6 +691,11 @@ class IslandService : Service(), IslandView.Listener {
         /** «رجّع للكاميرا»: back to the dock beside the camera. */
         fun redock(context: Context) {
             if (running) context.startService(Intent(context, IslandService::class.java).setAction(ACTION_REDOCK))
+        }
+
+        /** Settings changed (e.g. auto-hide time): restart the countdown with the new value. */
+        fun settingsChanged(context: Context) {
+            if (running) context.startService(Intent(context, IslandService::class.java).setAction(ACTION_SETTINGS_CHANGED))
         }
 
         /** Called by ScreenService on the main thread when it connects or disconnects. */
