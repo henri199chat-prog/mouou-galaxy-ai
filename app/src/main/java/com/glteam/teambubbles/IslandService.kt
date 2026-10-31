@@ -50,7 +50,8 @@ class IslandService : Service(), IslandView.Listener {
     private lateinit var expandedFrame: Box
     private var openingRequested = false
     private val handler = Handler(Looper.getMainLooper())
-    private val idleCollapse = Runnable { if (!isPinned()) collapseCard() }
+    private var typing = false // true only while the window holds focus for the keyboard
+    private val idleCollapse = Runnable { if (CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -181,7 +182,9 @@ class IslandService : Service(), IslandView.Listener {
                 cornerRadius = dp(19f).toFloat()
                 setColor(0x14FFFFFF)
             }
-            setOnTouchListener { _, _ -> setFocusable(true); false }
+            // Named setWindowTyping, NOT setFocusable: inside this EditText block that name is View.setFocusable,
+            // which silently kept the window unfocusable (no keyboard) and pinned the card (v2.2.3 bug).
+            setOnTouchListener { _, _ -> setWindowTyping(true); false }
             setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_SEND) { onSend(); true } else false
             }
@@ -229,7 +232,7 @@ class IslandService : Service(), IslandView.Listener {
 
     private fun collapseCard() {
         handler.removeCallbacks(idleCollapse)
-        setFocusable(false)
+        setWindowTyping(false)
         island.collapse()
     }
 
@@ -253,22 +256,19 @@ class IslandService : Service(), IslandView.Listener {
 
     // ---- typing, pinning and timers (spec §3, §5.6) ----
 
-    /** Pinned while typing: input focused, or a draft is kept. Then the card never hides. */
-    private fun isPinned() = input.hasFocus() || input.text.isNotBlank()
-
     private fun restartIdleTimer() {
         handler.removeCallbacks(idleCollapse)
         handler.postDelayed(idleCollapse, CHAT_IDLE_MS)
     }
 
     private fun onOutsideTouch() {
-        if (island.isExpandedOrOpening && !isPinned()) collapseCard()
+        if (island.isExpandedOrOpening && CardPin.outsideTapCollapses(input.text)) collapseCard()
     }
 
     private fun onBackKey(): Boolean {
         if (!island.isExpandedOrOpening) return false
-        if (input.hasFocus()) {
-            setFocusable(false) // keyboard closes, draft kept, 25 s timer restarts
+        if (typing) {
+            setWindowTyping(false) // keyboard closes, draft kept, 25 s timer restarts
             restartIdleTimer()
         } else {
             collapseCard()
@@ -288,7 +288,7 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     /** Take window focus only while typing (spec §5.1); otherwise stay NOT_FOCUSABLE. */
-    private fun setFocusable(focusable: Boolean) {
+    private fun setWindowTyping(focusable: Boolean) {
         val r = root ?: return
         val imm = getSystemService(InputMethodManager::class.java)
         val wasFocusable = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE == 0
@@ -296,6 +296,7 @@ class IslandService : Service(), IslandView.Listener {
             if (focusable) input.post { input.requestFocus(); imm.showSoftInput(input, 0) }
             return
         }
+        typing = focusable
         if (focusable) {
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or
