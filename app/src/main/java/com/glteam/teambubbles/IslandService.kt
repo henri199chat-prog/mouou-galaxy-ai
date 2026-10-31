@@ -45,15 +45,16 @@ class IslandService : Service() {
 
     private fun showIsland() {
         val d = resources.displayMetrics.density
-        val pillW = (106 * d).toInt()
-        val pillH = (34 * d).toInt()
+        // Small enough to sit inside the status bar row without touching the icons (Ayman, 2026-10-31).
+        val pillH = minOf((26 * d).toInt(), statusBarHeight() - (4 * d).toInt()).coerceAtLeast((20 * d).toInt())
+        val pillW = (pillH * 2.9f).toInt()
         val margin = (12 * d).toInt()
         val window = CutoutPlacer.idleWindow(
             screenWidth = screenWidth(),
             cutout = cameraCutout(),
             pillWidth = pillW,
             pillHeight = pillH,
-            gap = (8 * d).toInt(),
+            gap = (6 * d).toInt(),
             touchMargin = margin,
             side = PillSide.RIGHT,
             fallbackTop = (6 * d).toInt(),
@@ -93,6 +94,15 @@ class IslandService : Service() {
     private fun screenWidth(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) windowManager.maximumWindowMetrics.bounds.width()
         else resources.displayMetrics.widthPixels
+
+    private fun statusBarHeight(): Int {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val insets = windowManager.maximumWindowMetrics.windowInsets
+            return insets.getInsets(android.view.WindowInsets.Type.statusBars()).top
+        }
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else (24 * resources.displayMetrics.density).toInt()
+    }
 
     /** The front-camera hole from DisplayCutout.boundingRects: the one touching the top edge. */
     private fun cameraCutout(): Box? {
