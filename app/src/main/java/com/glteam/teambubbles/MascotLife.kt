@@ -16,6 +16,7 @@ class MascotLife(private val random: Random = Random.Default) {
 
     private var nextBlinkAt = -1L
     private var blinkStart = Long.MIN_VALUE
+    private var lastWasDouble = false
     private var nextLookAt = -1L
     private var lookFrom = Look(0f, 0f)
     private var lookTo = Look(0f, 0f)
@@ -29,7 +30,14 @@ class MascotLife(private val random: Random = Random.Default) {
         if (nextBlinkAt < 0) nextBlinkAt = nowMs + blinkGap()
         if (nowMs >= nextBlinkAt) {
             blinkStart = nextBlinkAt
-            nextBlinkAt = nowMs + blinkGap()
+            // Now and then a quick double blink, like a real face (about one blink in four).
+            nextBlinkAt = if (!lastWasDouble && random.nextFloat() < DOUBLE_BLINK_CHANCE) {
+                lastWasDouble = true
+                nowMs + DOUBLE_BLINK_GAP_MS
+            } else {
+                lastWasDouble = false
+                nowMs + blinkGap()
+            }
         }
         val t = nowMs - blinkStart
         if (t < 0 || t >= BLINK_MS) return 1f
@@ -63,6 +71,8 @@ class MascotLife(private val random: Random = Random.Default) {
         const val BLINK_MS = 130L
         const val BLINK_MIN_GAP_MS = 3700L
         const val BLINK_MAX_GAP_MS = 5000L
+        const val DOUBLE_BLINK_CHANCE = 0.25f
+        const val DOUBLE_BLINK_GAP_MS = 220L
         const val LOOK_EVERY_MS = 2600L
         const val LOOK_EASE_MS = 220L
         private val GLANCES = listOf(

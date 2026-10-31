@@ -181,18 +181,23 @@ object ReplyParser {
     }
 }
 
-/** Cleans a pasted key (spec §10.8): spaces, zero-width characters, quotes, a `GEMINI_API_KEY=` prefix. */
+/**
+ * Cleans a pasted key (spec §10.8). An Arabic phone's clipboard can wrap copied text in invisible
+ * bidi marks (U+200E/U+200F, U+202A–U+202E, U+2066–U+2069) that made a correct key look "strange"
+ * (Ayman, 2.3.0). A Google API key only uses letters, digits, '_', '-' (and maybe '.'), so everything else goes.
+ */
 object KeySanitizer {
     private val VALID = Regex("^AIza[0-9A-Za-z_\\-]{35}$")
+    private val PREFIX = Regex("^\\s*GEMINI_API_KEY\\s*[=:]\\s*", RegexOption.IGNORE_CASE)
+    private val NOT_KEY_CHAR = Regex("[^0-9A-Za-z_.\\-]") // "." kept in case of newer key formats
 
-    fun clean(raw: String): String = raw
-        .replace(Regex("[\\u200B-\\u200D\\uFEFF\\u2060]"), "")
-        .trim()
-        .removePrefix("GEMINI_API_KEY=").removePrefix("GEMINI_API_KEY =")
-        .trim().trim('"', '\'', '`', '«', '»', '“', '”')
-        .replace(Regex("\\s"), "")
+    fun clean(raw: String): String = raw.replace(PREFIX, "").replace(NOT_KEY_CHAR, "")
 
+    /** The usual shape; only a hint, the key test asks Google, which is the only real judge. */
     fun looksValid(key: String) = VALID.matches(key)
+
+    /** Safe description for the screen: the first 4 characters (always "AIza" for real keys) and the length. */
+    fun describe(key: String) = "يبدا بـ «${key.take(4)}…» وطولو ${key.length} حرف"
 }
 
 /** Why a message got no answer, with the Darija line Mouou says (spec §10.3). */

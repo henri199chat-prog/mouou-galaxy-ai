@@ -137,11 +137,15 @@ class Brain(
     /** Key test (spec §10.8): models.list + a 5-token ping on the first 2 models. */
     fun testKey(apiKey: String): KeyTest {
         val key = KeySanitizer.clean(apiKey)
-        if (!KeySanitizer.looksValid(key)) return KeyTest(false, "الشكل موش صحيح: لازم يبدا بـ AIza و 39 حرف", emptyList(), emptyList())
+        if (key.isEmpty()) return KeyTest(false, BrainError.NO_KEY.darija, emptyList(), emptyList())
+        // No verdict on the shape: Google decides (a valid key was refused for "looking strange" in 2.3.0).
         val list = try {
             transport.get("${Gemini.BASE}/models?pageSize=200", key)
         } catch (e: IOException) {
             return KeyTest(false, "ما نجمتش نوصل: ${e.javaClass.simpleName}", emptyList(), emptyList())
+        }
+        if (list.code == 400 || list.code == 401 || list.code == 403) {
+            return KeyTest(false, "Google قال إنو المفتاح موش صالح (HTTP ${list.code}) — ${KeySanitizer.describe(key)}", emptyList(), emptyList())
         }
         if (list.code != 200) return KeyTest(false, "models.list → HTTP ${list.code}", emptyList(), emptyList())
         val models = Gemini.orderModels(list.body).ifEmpty { Gemini.STATIC_MODELS }

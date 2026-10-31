@@ -134,6 +134,12 @@ class BrainTest {
         assertEquals(2, r.pings.size)
     }
 
+    @Test fun keyTestAsksGoogleEvenWhenTheShapeLooksUnusual() {
+        val t = FakeTransport(mapOf("gemini-3.8-flash" to mutableListOf(GeminiTransport.Response(200, "{}"))))
+        val r = Brain(t).testKey("\u200FAQ.Ab12_newStyleKey-0099\u200E")
+        assertTrue(r.ok) // Google said 200: the app must not refuse it on looks
+    }
+
     companion object {
         val MODELS_LIST = """
             {"models":[

@@ -16,6 +16,10 @@ class GeminiPartsTest {
         assertEquals(key, KeySanitizer.clean("GEMINI_API_KEY=\"$key\"\n"))
         assertEquals(key, KeySanitizer.clean("​ $key ﻿"))
         assertTrue(KeySanitizer.looksValid(key))
+        // Arabic clipboard: invisible bidi marks around the copied key (Ayman's 2.3.0 report).
+        assertEquals(key, KeySanitizer.clean("\u200F\u202B$key\u202C\u200E"))
+        assertEquals(key, KeySanitizer.clean("\u2067$key\u2069 \n"))
+        assertEquals(key, KeySanitizer.clean("gemini_api_key: $key"))
         assertFalse(KeySanitizer.looksValid("AIza123"))
     }
 

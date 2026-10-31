@@ -24,8 +24,11 @@ class MascotLifeTest {
             if (wasOpen && !open) closedStarts += t
             wasOpen = open
         }
-        assertTrue("blinks: ${closedStarts.size}", closedStarts.size in 5..9)
-        closedStarts.zipWithNext { a, b -> assertTrue("gap ${b - a}", b - a in 3600..5100) }
+        assertTrue("blinks: ${closedStarts.size}", closedStarts.size in 5..14)
+        // Either a normal 3.7–5 s gap, or the quick second blink of a double blink.
+        closedStarts.zipWithNext { a, b -> assertTrue("gap ${b - a}", b - a in 3600..5100 || b - a in 150..300) }
+        // Never three blinks in a row: after a double blink comes a normal gap.
+        closedStarts.zipWithNext { a, b -> b - a }.zipWithNext { g1, g2 -> assertTrue(!(g1 < 400 && g2 < 400)) }
     }
 
     @Test fun eyesFullyCloseMidBlink() {

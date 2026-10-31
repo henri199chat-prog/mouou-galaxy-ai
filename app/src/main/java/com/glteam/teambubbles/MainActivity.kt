@@ -114,7 +114,7 @@ class MainActivity : ComponentActivity() {
         val key = KeySanitizer.clean(brain.keyInput)
         if (key.isEmpty()) return
         vault.save(key)
-        brain = brain.copy(keyInput = "", keySaved = true, result = if (KeySanitizer.looksValid(key)) "تسجّل ✅ (اضغط «اختبار» باش نتأكدو)" else "تسجّل، أما الشكل غريب: لازم يبدا بـ AIza")
+        brain = brain.copy(keyInput = "", keySaved = true, result = "تسجّل ✅ (${KeySanitizer.describe(key)}). اضغط «اختبار» وGoogle يقلنا إذا يخدم.")
     }
 
     /** Spec §10.8: tests the typed key (saving it) or the saved one: models.list + a ping on 2 models. */
