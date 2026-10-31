@@ -236,7 +236,8 @@ class IslandService : Service(), IslandView.Listener {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(0xFF8E8E96.toInt())
             text = "● Mouou"
-            textDirection = View.TEXT_DIRECTION_ANY_RTL
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG_RTL
+            textAlignment = View.TEXT_ALIGNMENT_TEXT_START
             gravity = Gravity.START or Gravity.TOP
             movementMethod = ScrollingMovementMethod() // long replies scroll inside; the card never grows
             isVerticalScrollBarEnabled = true
@@ -248,7 +249,9 @@ class IslandService : Service(), IslandView.Listener {
             hint = "احكي معايا..."
             isSingleLine = true
             imeOptions = EditorInfo.IME_ACTION_SEND
-            textDirection = View.TEXT_DIRECTION_ANY_RTL
+            // Empty field = right-to-left, so the cursor starts on the right like the hint (2.2.6 had it on the left).
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG_RTL
+            textAlignment = View.TEXT_ALIGNMENT_TEXT_START
             setPadding(dp(14f), 0, dp(14f), 0)
             background = GradientDrawable().apply {
                 cornerRadius = dp(19f).toFloat()
@@ -498,6 +501,7 @@ class IslandService : Service(), IslandView.Listener {
         reply.text = "مازلت ما نجمش نخمّم توا… المخ يجي في الخطوة الجاية أيمون"
         reply.scrollTo(0, 0)
         island.hop()
+        island.glanceAtReply()
         restartIdleTimer()
     }
 

@@ -57,6 +57,11 @@ class IslandView(context: Context) : View(context) {
     private var originX = 0
     private var originY = 0
     private var pendingFrame: Box? = null
+    private var pendingSince = 0L
+    private val location = IntArray(2)
+    private var replyGlanceUntil = 0L
+    private var lookTargetX = 0f
+    private var lookTargetY = 0f
     private var lastFrameMs = 0L
     private var screenOn = true
     private var wasOpen = false
@@ -103,7 +108,8 @@ class IslandView(context: Context) : View(context) {
     /** Tell the view the window frame the service is about to apply (absolute screen box). */
     fun expectFrame(frame: Box) {
         pendingFrame = frame
-        if (width == frame.width && height == frame.height) applyFrame(frame) // same size: no onSizeChanged
+        pendingSince = SystemClock.uptimeMillis()
+        postInvalidateOnAnimation()
     }
 
     fun expand() {
@@ -134,17 +140,30 @@ class IslandView(context: Context) : View(context) {
         if (on) kick()
     }
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        pendingFrame?.let { if (it.width == w && it.height == h) applyFrame(it) }
+    /**
+     * Draw relative to where the window REALLY is on screen this frame. On One UI the new window size can
+     * arrive a frame before the new position (Ayman's 2.2.6 recording: the pill jumped to the screen edge
+     * on open and close); reading the location every frame keeps the drawing glued to the screen.
+     * The card only starts dropping once both the size and the position of the expected frame are applied.
+     */
+    private fun syncWindowOrigin(now: Long) {
+        getLocationOnScreen(location)
+        originX = location[0]
+        originY = location[1]
+        val frame = pendingFrame ?: return
+        val sizeOk = width == frame.width && height == frame.height
+        val placeOk = originX == frame.left && originY == frame.top
+        // The system may nudge a window's position (cutout, limits): after 150 ms trust the size alone.
+        if (sizeOk && (placeOk || now - pendingSince > FRAME_SETTLE_TIMEOUT_MS)) {
+            pendingFrame = null
+            post { listener?.onWindowApplied() }
+        }
     }
 
-    private fun applyFrame(frame: Box) {
-        originX = frame.left
-        originY = frame.top
-        pendingFrame = null
-        invalidate()
-        post { listener?.onWindowApplied() }
+    /** After a reply arrives Mouou looks at it for a moment (up and to his right). */
+    fun glanceAtReply() {
+        replyGlanceUntil = SystemClock.uptimeMillis() + REPLY_GLANCE_MS
+        kick()
     }
 
     private fun kick() {
@@ -156,6 +175,7 @@ class IslandView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         val now = SystemClock.uptimeMillis()
+        syncWindowOrigin(now)
         var moving = if (spring.isSettled) false else {
             val dt = if (lastFrameMs == 0L) 8.33f else (now - lastFrameMs).toFloat()
             spring.step(dt)
@@ -172,7 +192,10 @@ class IslandView(context: Context) : View(context) {
             landed = true
             bounce.land(now) // soft squash when the card has finished dropping
         }
-        val goal = if (attentive) 1f else 0f
+        val glancingAtReply = !attentive && now < replyGlanceUntil
+        val goal = if (attentive || glancingAtReply) 1f else 0f
+        lookTargetX = if (glancingAtReply) REPLY_LOOK_X else FIELD_LOOK_X
+        lookTargetY = if (glancingAtReply) REPLY_LOOK_Y else FIELD_LOOK_Y
         attention += (goal - attention) * (frameDt / 140f).coerceAtMost(1f)
         val speed = kotlin.math.hypot(dragVx, dragVy)
         val stretchGoal = (speed / (2500f * density)).coerceAtMost(1f) * MAX_DRAG_STRETCH
@@ -192,7 +215,7 @@ class IslandView(context: Context) : View(context) {
 
         // Pacing (battery): every vsync while morphing, 30 fps for the idle breathing, nothing with the screen off.
         if (!isAttachedToWindow || !screenOn) return
-        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f
+        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f || pendingFrame != null
         if (moving || easingAttention || bounce.active(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
 
@@ -298,8 +321,8 @@ class IslandView(context: Context) : View(context) {
         canvas.drawRoundRect(body, corner, corner, bodyPaint)
 
         val glance = life.look(now)
-        val lookX = glance.x + (FIELD_LOOK_X - glance.x) * attention
-        val lookY = glance.y + (FIELD_LOOK_Y - glance.y) * attention
+        val lookX = glance.x + (lookTargetX - glance.x) * attention
+        val lookY = glance.y + (lookTargetY - glance.y) * attention
         val eyeW = w * 0.10f
         val eyeH = (h * 0.26f * life.eyeOpenness(now)).coerceAtLeast(eyeW * 0.25f)
         val eyeY = body.top + h * (0.56f + lookY)
@@ -399,6 +422,10 @@ class IslandView(context: Context) : View(context) {
         const val SHAKE_WINDOW_MS = 1300L
         const val FIELD_LOOK_X = 0.07f // the input field is to Mouou's right and a little lower
         const val FIELD_LOOK_Y = 0.045f
+        const val REPLY_LOOK_X = 0.07f // the reply text is to his right and higher
+        const val REPLY_LOOK_Y = -0.05f
+        const val REPLY_GLANCE_MS = 1200L
+        const val FRAME_SETTLE_TIMEOUT_MS = 150L
         const val CARD_RADIUS_DP = 30f
         const val CARD_PAD_DP = 12f
         const val MASCOT_DP = 48f

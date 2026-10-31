@@ -23,8 +23,8 @@ android {
         applicationId = "com.glteam.teambubbles"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "2.2.6"
+        versionCode = 20
+        versionName = "2.2.7"
     }
 
     signingConfigs {
