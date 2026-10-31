@@ -695,6 +695,8 @@ class IslandService : Service(), IslandView.Listener {
         island.setThinking(false)
         when (result) {
             is Brain.Result.Answer -> {
+                val current = brainSettings.models
+                if (current.isNotEmpty()) brainSettings.models = brain.promote(current, result.model)
                 memory.add(true, question) // history: text only, no screen text and no image (spec §10.4)
                 memory.add(false, result.reply.rawJson.ifBlank { result.reply.reply })
                 if (result.reply.remember.isNotBlank() && facts.remember(result.reply.remember)) brainSettings.saveFacts(facts)

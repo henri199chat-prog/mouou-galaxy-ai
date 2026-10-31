@@ -149,8 +149,13 @@ class Brain(
             return KeyTest(false, "Google قال إنو المفتاح موش صالح (HTTP ${list.code}) — ${KeySanitizer.describe(key)}", emptyList(), emptyList())
         }
         if (list.code != 200) return KeyTest(false, "models.list → HTTP ${list.code}", emptyList(), emptyList())
-        val models = Gemini.orderModels(list.body).ifEmpty { Gemini.STATIC_MODELS }
-        val pings = models.take(2).map { model ->
+        val listed = Gemini.orderModels(list.body).ifEmpty { Gemini.STATIC_MODELS }
+        // models.list answered: the key itself is valid. Now find which models really answer for THIS key
+        // (free keys often get 404 on pro models and 429 on some flash models — Ayman's 2.3.2 test).
+        val working = mutableListOf<String>()
+        val busy = mutableListOf<String>()
+        val other = mutableListOf<String>()
+        val pings = listed.map { model ->
             val t0 = clock()
             val code = try {
                 transport.post(
@@ -159,11 +164,34 @@ class Brain(
                     http1 = false,
                 ).code
             } catch (e: IOException) { -1 }
-            "$model: HTTP $code (${clock() - t0} ms)"
+            when (code) {
+                200 -> working += model
+                429 -> busy += model
+                404, 403 -> Unit // not available for this key: dropped from the list
+                else -> other += model
+            }
+            "$model: ${pingLabel(code)} (${clock() - t0} ms)"
         }
-        val ok = pings.any { it.contains("HTTP 200") }
-        return KeyTest(ok, if (ok) "المفتاح يخدم ✅" else "المفتاح ما خدمش مع حتى موديل", models, pings)
+        val ordered = (working + busy + other).ifEmpty { listed }
+        val summary = when {
+            working.isNotEmpty() -> "المفتاح يخدم ✅ — Mouou يبدا بـ ${working.first()}"
+            busy.isNotEmpty() -> "المفتاح صحيح ✅ أما الحصّة المجانية مشغولة توا (429). Mouou يجرّب الموديلات وحدو، ولا عاود الاختبار بعد دقيقة."
+            else -> "المفتاح صحيح ✅ أما حتى موديل ما جاوب توا — شوف سجلّ الأخطاء"
+        }
+        return KeyTest(true, summary, ordered, pings)
     }
+
+    private fun pingLabel(code: Int) = when (code) {
+        200 -> "يخدم ✅"
+        429 -> "مشغول (429)"
+        404, 403 -> "موش متوفّر ($code)"
+        -1 -> "ما وصلش"
+        else -> "HTTP $code"
+    }
+
+    /** After a real answer, the model that answered goes first next time (fewer failed tries). */
+    fun promote(models: List<String>, answered: String): List<String> =
+        if (models.firstOrNull() == answered) models else listOf(answered) + models.filter { it != answered }
 
     data class KeyTest(val ok: Boolean, val summary: String, val models: List<String>, val pings: List<String>)
 

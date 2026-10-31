@@ -17,6 +17,8 @@ class MascotLife(private val random: Random = Random.Default) {
     private var nextBlinkAt = -1L
     private var blinkStart = Long.MIN_VALUE
     private var lastWasDouble = false
+    private var blinkCount = 0
+    private var blinkMs = BLINK_MS
     private var nextLookAt = -1L
     private var lookFrom = Look(0f, 0f)
     private var lookTo = Look(0f, 0f)
@@ -30,6 +32,8 @@ class MascotLife(private val random: Random = Random.Default) {
         if (nextBlinkAt < 0) nextBlinkAt = nowMs + blinkGap()
         if (nowMs >= nextBlinkAt) {
             blinkStart = nextBlinkAt
+            // Every fifth blink is a slow, relaxed one (calmer, more alive than a metronome).
+            blinkMs = if (++blinkCount % 5 == 0 && !lastWasDouble) SLOW_BLINK_MS else BLINK_MS
             // Now and then a quick double blink, like a real face (about one blink in four).
             nextBlinkAt = if (!lastWasDouble && random.nextFloat() < DOUBLE_BLINK_CHANCE) {
                 lastWasDouble = true
@@ -40,8 +44,8 @@ class MascotLife(private val random: Random = Random.Default) {
             }
         }
         val t = nowMs - blinkStart
-        if (t < 0 || t >= BLINK_MS) return 1f
-        val half = BLINK_MS / 2f
+        if (t < 0 || t >= blinkMs) return 1f
+        val half = blinkMs / 2f
         return kotlin.math.abs(t - half) / half
     }
 
@@ -69,6 +73,7 @@ class MascotLife(private val random: Random = Random.Default) {
         const val BREATH_AMPLITUDE = 0.022f
         const val BREATH_MS = 3200L
         const val BLINK_MS = 130L
+        const val SLOW_BLINK_MS = 280L
         const val BLINK_MIN_GAP_MS = 3700L
         const val BLINK_MAX_GAP_MS = 5000L
         const val DOUBLE_BLINK_CHANCE = 0.25f

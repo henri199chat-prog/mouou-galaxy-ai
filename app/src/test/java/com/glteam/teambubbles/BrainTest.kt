@@ -126,12 +126,33 @@ class BrainTest {
         assertTrue("took $now ms", now <= 44_000)
     }
 
-    @Test fun keyTestListsModelsAndPings() {
-        val t = FakeTransport(mapOf("gemini-3.8-flash" to mutableListOf(GeminiTransport.Response(200, "{}")), "gemini-2.5-pro" to mutableListOf(GeminiTransport.Response(429, ""))))
+    @Test fun keyTestPutsWorkingModelsFirstAndDropsUnavailableOnes() {
+        val t = FakeTransport(mapOf(
+            "gemini-2.5-pro" to mutableListOf(GeminiTransport.Response(404, "")),     // free key: no pro
+            "gemini-3.8-flash" to mutableListOf(GeminiTransport.Response(429, "")),   // busy
+            "gemini-2.5-flash" to mutableListOf(GeminiTransport.Response(200, "{}")), // works
+        ))
         val r = Brain(t).testKey("  \"$key\" ")
         assertTrue(r.ok)
-        assertEquals("gemini-2.5-pro", r.models.first()) // pro first, then flash newest first
-        assertEquals(2, r.pings.size)
+        assertEquals("gemini-2.5-flash", r.models.first())
+        assertTrue("gemini-3.8-flash" in r.models)
+        assertTrue("gemini-2.5-pro" !in r.models)
+        assertEquals(5, r.pings.size) // every listed model is tried, not only two
+    }
+
+    @Test fun keyIsValidEvenWhenEveryModelIsBusy() {
+        val busy = { mutableListOf<Any>(GeminiTransport.Response(429, "")) }
+        val t = FakeTransport(mapOf("gemini-2.5-pro" to busy(), "gemini-3.8-flash" to busy(), "gemini-2.5-flash" to busy(),
+            "gemini-flash-latest" to busy(), "gemini-3.5-flash-lite" to busy()))
+        val r = Brain(t).testKey(key)
+        assertTrue(r.ok) // models.list said yes: the key is valid, only the quota is busy
+        assertTrue(r.summary.contains("429"))
+    }
+
+    @Test fun answeringModelGoesFirstNextTime() {
+        val b = Brain(FakeTransport(emptyMap()))
+        assertEquals(listOf("m2", "m1", "m3"), b.promote(listOf("m1", "m2", "m3"), "m2"))
+        assertEquals(listOf("m1", "m2"), b.promote(listOf("m1", "m2"), "m1"))
     }
 
     @Test fun keyTestAsksGoogleEvenWhenTheShapeLooksUnusual() {
