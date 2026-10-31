@@ -29,6 +29,7 @@ Read this first in every session. Update it before the session ends.
 - Idle pill size overrides spec §5.3 (96–120 × 32–36 dp) by Ayman's request: smaller, inside the status bar.
 - minSdk 26, targetSdk 35, compileSdk 36 (spec §2). Compose BOM 2025.12.01, activity-compose 1.11.0, Kotlin 2.2.21, AGP 8.13.0, Gradle 8.14.3, OkHttp 4.12.0.
 - ntfy topic is a setting, never hard-coded (public repo).
+- Test APKs for the phone: the chat file card did not open for Ayman, so each test APK is pushed to the separate branch `builds` of this repo (not to `main`) and he downloads it from `https://github.com/henri199chat-prog/mouou-galaxy-ai/raw/builds/<file>.apk`. No third-party file hosts.
 - Test builds (`assembleDebug`) install as a separate app `com.glteam.teambubbles.dev` named «Mouou تجربة», signed with the release key, so Ayman keeps his old app while testing. Real releases are `assembleRelease`.
 - Signing (Ayman, 2026-10-31): **new key**, made by Claude, stored in `app-keys/mouou/` (`mouou-release.jks` + `keystore.properties`, alias `mouou`, valid to 2054). SHA-256 `8d:62:78:44:81:be:d6:27:ac:e3:04:15:7d:3b:c0:d1:3c:56:9e:6f:a3:89:ec:df:1f:d0:9f:a5:8a:71:61:dd`. The old v2.2.0 (APKMEN key) must be uninstalled once before installing 2.2.1. Never make another key.
 
