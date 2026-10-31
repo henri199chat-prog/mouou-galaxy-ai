@@ -14,7 +14,7 @@ Read this first in every session. Update it before the session ends.
 ## Phase 1 steps
 
 - [x] 1.1 Project skeleton: Gradle KTS, manifest, Compose settings screen (Arabic RTL, dark space), temporary icon, first unit test, signing guard. Debug build OK, 1/1 tests.
-- [ ] 1.2 Overlay foreground service + idle black pill beside the camera cutout (DisplayCutout), pill-only window, touches pass through.
+- [x] 1.2 Overlay foreground service (`IslandService`, specialUse) + idle black pill with mini Mouou (`IslandView`) beside the camera cutout (`CutoutPlacer`, absolute TOP|LEFT, 8 dp gap, side RIGHT), pill-only window (pill + 12 dp margin), NOT_FOCUSABLE | NOT_TOUCH_MODAL, cutout ALWAYS, highest refresh mode. Settings: overlay permission + show/hide. 6/6 unit tests, lint 0 errors. **Not yet verified on the phone** (waiting for Ayman's test of 2.2.1-dev).
 - [ ] 1.3 Tap → card morph (spring 420 / 0.62, window resized before first expanded frame), card UI: mini mascot, input «احكي معايا...», send button; tap outside collapses, pinned while typing.
 - [ ] 1.4 Gesture engine: tap / long-press / one-finger drag + magnet / two-finger move / fling up (raw coords, slop×3).
 - [ ] 1.5 Gemini brain: key storage (Keystore AES-GCM), key test (models.list), model list + fallback on 429/404/403/5xx/timeout, JSON reply parsing, Darija error messages, system prompt §10.5. Unit tests with a mock server where model 1 returns 429.
@@ -27,6 +27,7 @@ Read this first in every session. Update it before the session ends.
 - Package stays `com.glteam.teambubbles`, versionCode 14 / 2.2.1 (spec §1).
 - minSdk 26, targetSdk 35, compileSdk 36 (spec §2). Compose BOM 2025.12.01, activity-compose 1.11.0, Kotlin 2.2.21, AGP 8.13.0, Gradle 8.14.3, OkHttp 4.12.0.
 - ntfy topic is a setting, never hard-coded (public repo).
+- Test builds (`assembleDebug`) install as a separate app `com.glteam.teambubbles.dev` named «Mouou تجربة», signed with the release key, so Ayman keeps his old app while testing. Real releases are `assembleRelease`.
 - Signing (Ayman, 2026-10-31): **new key**, made by Claude, stored in `app-keys/mouou/` (`mouou-release.jks` + `keystore.properties`, alias `mouou`, valid to 2054). SHA-256 `8d:62:78:44:81:be:d6:27:ac:e3:04:15:7d:3b:c0:d1:3c:56:9e:6f:a3:89:ec:df:1f:d0:9f:a5:8a:71:61:dd`. The old v2.2.0 (APKMEN key) must be uninstalled once before installing 2.2.1. Never make another key.
 
 ## Open questions for Ayman
@@ -35,4 +36,4 @@ Read this first in every session. Update it before the session ends.
 
 ## Session log
 
-- **Session 1 (2026-10-31):** read the spec; created the project skeleton (step 1.1); build + test pass. Repo `mouou-galaxy-ai` created (public) and pushed; spec saved privately in `app-keys/mouou/spec.pdf`; new signing key created in `app-keys/mouou/`. Next: step 1.2.
+- **Session 1 (2026-10-31):** read the spec; created the project skeleton (step 1.1); build + test pass. Repo `mouou-galaxy-ai` created (public) and pushed; spec saved privately in `app-keys/mouou/spec.pdf`; new signing key created in `app-keys/mouou/`. Step 1.2 done (pill beside the camera); test APK 2.2.1-dev sent to Ayman. Next: step 1.3 (tap → card morph), after Ayman confirms the pill position on his phone.

@@ -42,6 +42,14 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            resValue("string", "app_name", "Mouou Galaxy AI")
+            if (keystorePropsFile.exists()) signingConfig = signingConfigs.getByName("release")
+        }
+        // Test builds install next to the real app (own package and name), so Ayman keeps his working app.
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            resValue("string", "app_name", "Mouou تجربة")
             if (keystorePropsFile.exists()) signingConfig = signingConfigs.getByName("release")
         }
     }
