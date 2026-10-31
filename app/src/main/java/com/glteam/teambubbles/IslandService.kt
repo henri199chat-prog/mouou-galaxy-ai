@@ -284,6 +284,7 @@ class IslandService : Service(), IslandView.Listener {
         // The brain (Gemini) arrives in step 1.5; until then Mouou says so honestly.
         reply.text = "مازلت ما نجمش نخمّم توا… المخ يجي في الخطوة الجاية أيمون"
         reply.scrollTo(0, 0)
+        island.hop()
         restartIdleTimer()
     }
 
@@ -297,6 +298,7 @@ class IslandService : Service(), IslandView.Listener {
             return
         }
         typing = focusable
+        island.setAttentive(focusable)
         if (focusable) {
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or

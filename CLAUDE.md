@@ -8,6 +8,11 @@
 - The full spec is `Mouou Galaxy AI — Complete Product Specification (v2.2)`, kept privately in
   `henri199chat-prog/app-keys` at `mouou/spec.pdf` (it contains a private ntfy topic, so it must not
   be in this public repo). Section 3 "Owner requirements" is authoritative.
+- **Every build (Ayman's standing rule, 2026-10-31):** (1) before shipping, re-read the changed code
+  adversarially and fix every bug found (name clashes like `setFocusable` inside `apply {}`, state
+  that can get stuck, frame jumps, allocations in onDraw), and list what was fixed in `PROGRESS.md`;
+  (2) make Mouou a little smoother and more alive than in the previous build (within §4: no mouth,
+  no hands) and say what changed.
 - Save tokens: read only the files you need; don't analyse the whole project unless asked.
 - Before any big change, write a short plan and wait for Ayman's approval.
 - Never commit secrets: no keystore, passwords, API keys or the ntfy topic. Those are settings or live

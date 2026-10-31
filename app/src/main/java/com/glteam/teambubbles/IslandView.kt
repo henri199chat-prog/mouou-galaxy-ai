@@ -41,6 +41,12 @@ class IslandView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val spring = MorphSpring()
     private val life = MascotLife()
+    private val bounce = MascotBounce()
+    private var landed = false
+    private var attentive = false
+    private var attention = 0f // 0 = free glances, 1 = looking at the input field (eased)
+    private val tapTimes = LongArray(TAPS_FOR_SHAKE)
+    private var tapCount = 0
     private var originX = 0
     private var originY = 0
     private var pendingFrame: Box? = null
@@ -78,7 +84,20 @@ class IslandView(context: Context) : View(context) {
     }
 
     fun expand() {
+        landed = false
         spring.target = 1f
+        kick()
+    }
+
+    /** Happy hop (a message was sent). */
+    fun hop() {
+        bounce.hop(SystemClock.uptimeMillis())
+        kick()
+    }
+
+    /** While Ayman types, Mouou watches the input field instead of glancing around. */
+    fun setAttentive(on: Boolean) {
+        attentive = on
         kick()
     }
 
@@ -106,7 +125,9 @@ class IslandView(context: Context) : View(context) {
     }
 
     private fun kick() {
-        lastFrameMs = 0L
+        // Reset the frame clock only after a real pause (idle 30 fps or screen off); resetting it
+        // mid-animation would make the spring take one too-short step (a visible stutter).
+        if (SystemClock.uptimeMillis() - lastFrameMs > PAUSE_MS) lastFrameMs = 0L
         postInvalidateOnAnimation()
     }
 
@@ -121,8 +142,15 @@ class IslandView(context: Context) : View(context) {
             spring.snapTo(0f)
             moving = false
         }
+        val frameDt = if (lastFrameMs == 0L) 8.33f else (now - lastFrameMs).toFloat()
         lastFrameMs = now
         val p = spring.value
+        if (spring.target == 1f && !moving && !landed) {
+            landed = true
+            bounce.land(now) // soft squash when the card has finished dropping
+        }
+        val goal = if (attentive) 1f else 0f
+        attention += (goal - attention) * (frameDt / 140f).coerceAtMost(1f)
 
         canvas.save()
         canvas.translate(-originX.toFloat(), -originY.toFloat())
@@ -138,7 +166,8 @@ class IslandView(context: Context) : View(context) {
 
         // Pacing (battery): every vsync while morphing, 30 fps for the idle breathing, nothing with the screen off.
         if (!isAttachedToWindow || !screenOn) return
-        if (moving) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
+        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f
+        if (moving || easingAttention || bounce.active(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
 
     private fun drawShape(canvas: Canvas, p: Float, now: Long) {
@@ -228,20 +257,24 @@ class IslandView(context: Context) : View(context) {
             )
         }
         val breath = life.breath(now)
+        val squash = bounce.squash(now)
         canvas.save()
-        canvas.translate(cx, cy)
-        canvas.scale(2f - breath, breath, 0f, h / 2) // squash and stretch around the bottom edge
+        canvas.translate(cx + w * bounce.offsetX(now), cy + h * bounce.offsetY(now))
+        // Breathing and reactions squash/stretch around the bottom edge, keeping the volume constant.
+        canvas.scale((2f - breath) * (2f - squash), breath * squash, 0f, h / 2)
 
         val g = 2f * density
         canvas.drawRoundRect(body.left - g, body.top - g, body.right + g, body.bottom + g, corner + g, corner + g, bodyGlowPaint)
         canvas.drawRoundRect(body, corner, corner, bodyPaint)
 
-        val look = life.look(now)
+        val glance = life.look(now)
+        val lookX = glance.x + (FIELD_LOOK_X - glance.x) * attention
+        val lookY = glance.y + (FIELD_LOOK_Y - glance.y) * attention
         val eyeW = w * 0.10f
         val eyeH = (h * 0.26f * life.eyeOpenness(now)).coerceAtLeast(eyeW * 0.25f)
-        val eyeY = body.top + h * (0.56f + look.y)
+        val eyeY = body.top + h * (0.56f + lookY)
         for (dx in EYE_OFFSETS) {
-            val ex = w * (dx + look.x)
+            val ex = w * (dx + lookX)
             eye.set(ex - eyeW / 2, eyeY - eyeH / 2, ex + eyeW / 2, eyeY + eyeH / 2)
             canvas.drawOval(eye, eyePaint)
         }
@@ -250,7 +283,6 @@ class IslandView(context: Context) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (isExpandedOrOpening) return true // the card swallows touches on its empty space
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.rawX
@@ -259,14 +291,32 @@ class IslandView(context: Context) : View(context) {
             }
             MotionEvent.ACTION_UP -> {
                 val moved = abs(event.rawX - downX) > tapSlop || abs(event.rawY - downY) > tapSlop
-                if (!moved && event.eventTime - downAt < longPressMs) listener?.onPillTap()
+                if (!moved && event.eventTime - downAt < longPressMs) onTap(event.eventTime)
             }
         }
         return true
     }
 
+    /** A tap on the pill opens the card; 5 taps within 1.3 s make Mouou shake (spec §5.5). */
+    private fun onTap(time: Long) {
+        tapTimes[tapCount % TAPS_FOR_SHAKE] = time
+        tapCount++
+        val oldest = tapTimes[tapCount % TAPS_FOR_SHAKE]
+        if (tapCount >= TAPS_FOR_SHAKE && time - oldest <= SHAKE_WINDOW_MS) {
+            tapCount = 0
+            bounce.shake(SystemClock.uptimeMillis())
+            kick()
+        }
+        if (!isExpandedOrOpening) listener?.onPillTap() // on the open card, empty space only counts taps
+    }
+
     private companion object {
         const val IDLE_FRAME_MS = 33L
+        const val PAUSE_MS = 50L
+        const val TAPS_FOR_SHAKE = 5
+        const val SHAKE_WINDOW_MS = 1300L
+        const val FIELD_LOOK_X = 0.07f // the input field is to Mouou's right and a little lower
+        const val FIELD_LOOK_Y = 0.045f
         const val CARD_RADIUS_DP = 30f
         const val CARD_PAD_DP = 12f
         const val MASCOT_DP = 48f
