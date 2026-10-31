@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Spec §9: lets the island sit above the status bar (TYPE_ACCESSIBILITY_OVERLAY, reliable taps beside the camera)
+     and, from step 1.6, see the current screen when Ayman asks a question. Nothing is recorded or stored. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:notificationTimeout="100"
+    android:description="@string/screen_service_description" />

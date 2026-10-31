@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
 
     private var canOverlay by mutableStateOf(false)
     private var islandOn by mutableStateOf(false)
+    private var accessibilityOn by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,8 +50,11 @@ class MainActivity : ComponentActivity() {
             SettingsHome(
                 canOverlay = canOverlay,
                 islandOn = islandOn,
+                accessibilityOn = accessibilityOn,
                 onOverlay = ::openOverlaySettings,
                 onToggleIsland = ::toggleIsland,
+                onAccessibility = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                onRedock = { IslandService.redock(this) },
             )
         }
     }
@@ -59,6 +63,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         canOverlay = Settings.canDrawOverlays(this)
         islandOn = IslandService.running
+        accessibilityOn = ScreenService.instance != null
     }
 
     private fun openOverlaySettings() {
@@ -75,8 +80,11 @@ class MainActivity : ComponentActivity() {
 private fun SettingsHome(
     canOverlay: Boolean,
     islandOn: Boolean,
+    accessibilityOn: Boolean,
     onOverlay: () -> Unit,
     onToggleIsland: () -> Unit,
+    onAccessibility: () -> Unit,
+    onRedock: () -> Unit,
 ) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF6A3FD0), background = Color(0xFF030308))) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -93,9 +101,24 @@ private fun SettingsHome(
                     Text("✅ إذن الظهور فوق التطبيقات", color = Color(0xFF39FF88), fontSize = 14.sp)
                     if (islandOn) {
                         OutlinedButton(onClick = onToggleIsland) { Text("خبّي الجزيرة") }
+                        OutlinedButton(onClick = onRedock) { Text("رجّع للكاميرا") }
                     } else {
                         Button(onClick = onToggleIsland) { Text("ورّي الجزيرة") }
                     }
+                }
+                if (accessibilityOn) {
+                    Text("✅ الجزيرة فوق شريط الإشعارات، حذا الكاميرا", color = Color(0xFF39FF88), fontSize = 14.sp)
+                } else {
+                    Text(
+                        "باش الجزيرة تقعد حذا الكاميرا واللمسة تخدم من أول مرة، شغّل «الشاشة» في إعدادات الوصول. " +
+                            "توا هي تحت شريط الإشعارات باش اللمسة تخدم ديما.",
+                        color = Color(0xFF8E8E96), fontSize = 13.sp,
+                    )
+                    Button(onClick = onAccessibility) { Text("إعدادات الوصول") }
+                    Text(
+                        "إذا قالك «إعداد مقيّد»: الإعدادات ← التطبيقات ← هذا التطبيق ← ⋮ ← «السماح بالإعدادات المقيّدة»، وارجع شغّلو.",
+                        color = Color(0xFF8E8E96), fontSize = 12.sp,
+                    )
                 }
             }
         }

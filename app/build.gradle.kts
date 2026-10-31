@@ -23,8 +23,8 @@ android {
         applicationId = "com.glteam.teambubbles"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "2.2.5"
+        versionCode = 19
+        versionName = "2.2.6"
     }
 
     signingConfigs {
@@ -43,6 +43,7 @@ android {
         release {
             isMinifyEnabled = false
             resValue("string", "app_name", "Mouou Galaxy AI")
+            resValue("string", "screen_service_label", "Mouou Galaxy AI – الشاشة")
             if (keystorePropsFile.exists()) signingConfig = signingConfigs.getByName("release")
         }
         // Test builds install next to the real app (own package and name), so Ayman keeps his working app.
@@ -50,6 +51,7 @@ android {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
             resValue("string", "app_name", "Mouou تجربة")
+            resValue("string", "screen_service_label", "Mouou تجربة – الشاشة")
             if (keystorePropsFile.exists()) signingConfig = signingConfigs.getByName("release")
         }
     }

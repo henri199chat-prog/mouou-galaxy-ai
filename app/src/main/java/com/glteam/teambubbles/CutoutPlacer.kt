@@ -9,6 +9,10 @@ data class Box(val left: Int, val top: Int, val right: Int, val bottom: Int) {
     val height get() = bottom - top
     val centerX get() = (left + right) / 2
     val centerY get() = (top + bottom) / 2
+
+    fun offset(dx: Int, dy: Int) = Box(left + dx, top + dy, right + dx, bottom + dy)
+    fun inflate(m: Int) = Box(left - m, top - m, right + m, bottom + m)
+    fun moveTo(newLeft: Int, newTop: Int) = Box(newLeft, newTop, newLeft + width, newTop + height)
 }
 
 /**

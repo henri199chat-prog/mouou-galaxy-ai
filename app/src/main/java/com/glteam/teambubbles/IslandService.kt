@@ -16,11 +16,16 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.provider.Settings
 import android.text.method.ScrollingMovementMethod
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -29,29 +34,55 @@ import android.widget.FrameLayout
 import android.widget.TextView
 
 /**
- * Foreground service that owns the floating island window (spec §5).
+ * Foreground service that owns the floating island window (spec §5, §6).
  *
- * Idle: the window is only the pill + 12 dp touch margin, NOT_FOCUSABLE | NOT_TOUCH_MODAL, so every
- * touch outside the pill reaches the app underneath. Tap: the window is first resized to the expanded
- * size, and only once that size is applied does the morph start (no blank frame). Focus is taken only
- * while the input is being typed in.
+ * The window lives in one of two hosts: with the accessibility service on, it is a
+ * TYPE_ACCESSIBILITY_OVERLAY window, above the status bar, docked beside the camera (taps always land);
+ * without it, a TYPE_APPLICATION_OVERLAY window docked just below the status bar (the status bar would
+ * otherwise swallow the first taps, spec §19 bug 14). Idle, the window is only the pill + 12 dp margin;
+ * on tap it is first resized to the expanded frame and only then does the morph start (no blank frame).
+ * The window is never resized while a finger is down; dragging only moves it.
  */
 class IslandService : Service(), IslandView.Listener {
 
-    private lateinit var windowManager: WindowManager
     private lateinit var params: WindowManager.LayoutParams
+    private var hostWm: WindowManager? = null
     private var root: IslandRoot? = null
     private lateinit var island: IslandView
     private lateinit var reply: TextView
     private lateinit var input: EditText
     private lateinit var send: SendButton
+    private lateinit var prefs: IslandPrefs
 
+    private var margin = 0
+    private lateinit var pill: Box
     private lateinit var idleFrame: Box
     private lateinit var expandedFrame: Box
     private var openingRequested = false
-    private val handler = Handler(Looper.getMainLooper())
+    private var windowIsIdle = true // the window is pill-sized (not the expanded card frame)
+    private var redockAfterCollapse = false
     private var typing = false // true only while the window holds focus for the keyboard
+    private val handler = Handler(Looper.getMainLooper())
     private val idleCollapse = Runnable { if (CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
+
+    // Spring that carries the pill to where it settles after a drag (magnet or clamp).
+    private val settleSpring = MorphSpring()
+    private var settleFrom = Box(0, 0, 0, 0)
+    private var settleTo = Box(0, 0, 0, 0)
+    private var settleLastMs = 0L
+    private val settleFrame = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            val now = SystemClock.uptimeMillis()
+            val moving = settleSpring.step((now - settleLastMs).toFloat().coerceAtLeast(1f))
+            settleLastMs = now
+            val p = settleSpring.value
+            movePillTo(
+                (settleFrom.left + (settleTo.left - settleFrom.left) * p).toInt(),
+                (settleFrom.top + (settleTo.top - settleFrom.top) * p).toInt(),
+            )
+            if (moving) Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -63,12 +94,13 @@ class IslandService : Service(), IslandView.Listener {
 
     override fun onCreate() {
         super.onCreate()
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         startInForeground()
-        if (!Settings.canDrawOverlays(this)) {
+        if (!Settings.canDrawOverlays(this) && ScreenService.instance == null) {
             stopSelf()
             return
         }
+        prefs = IslandPrefs(this)
+        current = this
         showIsland()
         registerReceiver(screenReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
@@ -76,49 +108,93 @@ class IslandService : Service(), IslandView.Listener {
         })
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REDOCK && root != null) redock()
+        return START_STICKY
+    }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        Choreographer.getInstance().removeFrameCallback(settleFrame)
         if (root != null) runCatching { unregisterReceiver(screenReceiver) }
-        root?.let { runCatching { windowManager.removeView(it) } }
+        removeWindow()
         root = null
+        if (current === this) current = null
         running = false
         super.onDestroy()
+    }
+
+    // ---- window host (accessibility overlay or normal overlay) ----
+
+    private val usingAccessibility get() = ScreenService.instance != null
+
+    private fun currentHost(): Pair<WindowManager, Int> {
+        val acc = ScreenService.instance
+        return if (acc != null) {
+            (acc.getSystemService(WINDOW_SERVICE) as WindowManager) to WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else {
+            (getSystemService(WINDOW_SERVICE) as WindowManager) to WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        }
+    }
+
+    private fun addWindow() {
+        val r = root ?: return
+        val (wm, type) = currentHost()
+        params.type = type
+        island.expectFrame(Box(params.x, params.y, params.x + params.width, params.y + params.height))
+        wm.addView(r, params)
+        hostWm = wm
+    }
+
+    private fun removeWindow() {
+        val r = root ?: return
+        hostWm?.let { wm -> runCatching { wm.removeView(r) } }
+        hostWm = null
+    }
+
+    /** The accessibility service was switched on or off: move the window to the right host and dock. */
+    private fun switchHost() {
+        if (root == null) return
+        if (!usingAccessibility && !Settings.canDrawOverlays(this)) {
+            stopSelf() // no host left
+            return
+        }
+        Choreographer.getInstance().removeFrameCallback(settleFrame)
+        if (island.isExpandedOrOpening || typing) {
+            setWindowTyping(false)
+            island.snapClosed()
+            setContentAlpha(0f)
+        }
+        removeWindow()
+        redockAfterCollapse = false
+        pill = prefs.customPill(pill.width, pill.height)?.let { clamp(it) } ?: dock()
+        idleFrame = pill.inflate(margin)
+        island.pill = pill
+        setParamsFrame(idleFrame)
+        windowIsIdle = true
+        addWindow()
     }
 
     // ---- building the window ----
 
     private fun dp(v: Float) = (v * resources.displayMetrics.density).toInt()
+    private val density get() = resources.displayMetrics.density
 
     private fun showIsland() {
-        val d = resources.displayMetrics.density
         // Small enough to sit inside the status-bar row without touching the icons (Ayman, 2026-10-31).
         val pillH = minOf(dp(26f), statusBarHeight() - dp(4f)).coerceAtLeast(dp(20f))
         val pillW = (pillH * 2.9f).toInt()
-        val margin = dp(12f)
-        idleFrame = CutoutPlacer.idleWindow(
-            screenWidth = screenWidth(),
-            cutout = cameraCutout(),
-            pillWidth = pillW,
-            pillHeight = pillH,
-            gap = dp(6f),
-            touchMargin = margin,
-            side = PillSide.RIGHT,
-            fallbackTop = dp(6f),
-        )
-        val pill = Box(idleFrame.left + margin, idleFrame.top + margin, idleFrame.right - margin, idleFrame.bottom - margin)
-        val card = IslandGeometry.card(screenWidth(), screenHeight(), statusBarHeight(), d)
-        expandedFrame = IslandGeometry.expandedWindow(pill, card, margin, screenWidth())
+        margin = dp(12f)
+        pill = prefs.customPill(pillW, pillH)?.let { clamp(it) } ?: dock(pillW, pillH)
+        idleFrame = pill.inflate(margin)
 
         island = IslandView(this).apply {
-            this.pill = pill
-            this.card = card
+            this.pill = this@IslandService.pill
             listener = this@IslandService
         }
         val rootView = IslandRoot(this, onOutside = ::onOutsideTouch, onBack = ::onBackKey)
         rootView.addView(island, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        buildCardContent(rootView, card)
+        buildCardContent(rootView)
 
         params = WindowManager.LayoutParams(
             idleFrame.width,
@@ -139,24 +215,23 @@ class IslandService : Service(), IslandView.Listener {
             preferredDisplayModeId = highestRefreshModeId()
             title = "MououIsland"
         }
-        island.expectFrame(idleFrame)
-        windowManager.addView(rootView, params)
         root = rootView
+        addWindow()
         running = true
     }
 
-    /** Card layout (spec §5.3): 12 dp padding, 48 dp mascot on the left (drawn by IslandView), reply on top, input row below. */
-    private fun buildCardContent(rootView: FrameLayout, cardScreen: Box) {
-        val card = Box(
-            cardScreen.left - expandedFrame.left, cardScreen.top - expandedFrame.top,
-            cardScreen.right - expandedFrame.left, cardScreen.bottom - expandedFrame.top,
-        )
-        val pad = dp(12f)
-        val contentLeft = card.left + pad + dp(48f) + dp(10f)
-        val contentRight = card.right - pad
-        val rowH = dp(38f)
-        val sendSize = dp(28f)
+    /** Dock: beside the camera above the status bar (accessibility host), or just below the status bar. */
+    private fun dock(w: Int = pill.width, h: Int = pill.height): Box =
+        if (usingAccessibility) {
+            CutoutPlacer.idleWindow(screenWidth(), cameraCutout(), w, h, dp(6f), 0, PillSide.RIGHT, dp(6f))
+        } else {
+            IslandGeometry.dockBelowStatusBar(screenWidth(), cameraCutout(), w, h, statusBarHeight(), dp(2f))
+        }
 
+    private fun clamp(p: Box) = IslandGeometry.clampPill(p, screenWidth(), navBarTop(), dp(8f))
+
+    /** Card children (spec §5.3): reply on top, input row below; positions are set on every open. */
+    private fun buildCardContent(rootView: FrameLayout) {
         reply = TextView(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(0xFF8E8E96.toInt())
@@ -166,9 +241,6 @@ class IslandService : Service(), IslandView.Listener {
             movementMethod = ScrollingMovementMethod() // long replies scroll inside; the card never grows
             isVerticalScrollBarEnabled = true
         }
-        val replyH = card.height - 2 * pad - rowH - dp(4f)
-        rootView.addView(reply, absolute(contentLeft, card.top + pad, contentRight - contentLeft, replyH))
-
         input = EditText(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(0xFFFFFFFF.toInt())
@@ -189,13 +261,26 @@ class IslandService : Service(), IslandView.Listener {
                 if (actionId == EditorInfo.IME_ACTION_SEND) { onSend(); true } else false
             }
         }
-        val fieldRight = contentRight - sendSize - dp(8f)
-        rootView.addView(input, absolute(contentLeft, card.bottom - pad - rowH, fieldRight - contentLeft, rowH))
-
         send = SendButton(this).apply { setOnClickListener { onSend() } }
-        rootView.addView(send, absolute(contentRight - sendSize, card.bottom - pad - rowH + (rowH - sendSize) / 2, sendSize, sendSize))
-
+        rootView.addView(reply, absolute(0, 0, 1, 1))
+        rootView.addView(input, absolute(0, 0, 1, 1))
+        rootView.addView(send, absolute(0, 0, 1, 1))
         setContentAlpha(0f)
+    }
+
+    /** Places the card children for a card at [cardScreen] inside a window at [frame]. */
+    private fun layoutCardContent(cardScreen: Box, frame: Box) {
+        val card = cardScreen.offset(-frame.left, -frame.top)
+        val pad = dp(12f)
+        val contentLeft = card.left + pad + dp(48f) + dp(10f)
+        val contentRight = card.right - pad
+        val rowH = dp(38f)
+        val sendSize = dp(28f)
+        val replyH = card.height - 2 * pad - rowH - dp(4f)
+        reply.layoutParams = absolute(contentLeft, card.top + pad, contentRight - contentLeft, replyH)
+        val fieldRight = contentRight - sendSize - dp(8f)
+        input.layoutParams = absolute(contentLeft, card.bottom - pad - rowH, fieldRight - contentLeft, rowH)
+        send.layoutParams = absolute(contentRight - sendSize, card.bottom - pad - rowH + (rowH - sendSize) / 2, sendSize, sendSize)
     }
 
     private fun absolute(left: Int, top: Int, width: Int, height: Int) =
@@ -209,6 +294,11 @@ class IslandService : Service(), IslandView.Listener {
 
     override fun onPillTap() {
         if (island.isExpandedOrOpening) return
+        Choreographer.getInstance().removeFrameCallback(settleFrame)
+        val card = IslandGeometry.cardFor(pill, screenWidth(), screenHeight(), statusBarHeight(), navBarTop(), density)
+        expandedFrame = IslandGeometry.expandedWindow(pill, card, margin, screenWidth())
+        island.card = card
+        layoutCardContent(card, expandedFrame)
         openingRequested = true
         applyFrame(expandedFrame) // resize FIRST; the morph starts in onWindowApplied
     }
@@ -227,7 +317,16 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     override fun onCollapsed() {
+        if (island.isFingerDown) {
+            // Never resize under a finger (spec §5.5): try again once the touch is over.
+            handler.postDelayed({ if (!island.isExpandedOrOpening) onCollapsed() }, 50)
+            return
+        }
         applyFrame(idleFrame)
+        if (redockAfterCollapse) {
+            redockAfterCollapse = false
+            settleTo(dock())
+        }
     }
 
     private fun collapseCard() {
@@ -236,14 +335,19 @@ class IslandService : Service(), IslandView.Listener {
         island.collapse()
     }
 
-    private fun applyFrame(frame: Box) {
-        val r = root ?: return
+    private fun setParamsFrame(frame: Box) {
         params.x = frame.left
         params.y = frame.top
         params.width = frame.width
         params.height = frame.height
+    }
+
+    private fun applyFrame(frame: Box) {
+        val r = root ?: return
+        windowIsIdle = frame == idleFrame
+        setParamsFrame(frame)
         island.expectFrame(frame)
-        windowManager.updateViewLayout(r, params)
+        hostWm?.updateViewLayout(r, params)
     }
 
     private fun setContentAlpha(a: Float) {
@@ -252,6 +356,115 @@ class IslandService : Service(), IslandView.Listener {
             v.alpha = a
             v.visibility = visibility
         }
+    }
+
+    // ---- moving (spec §3 "Moving", §6) ----
+
+    /** Moves the idle pill window to (left, top); the size never changes, so no resize under the finger. */
+    private fun movePillTo(left: Int, top: Int) {
+        val r = root ?: return
+        if (!windowIsIdle) return // never move a pill-sized frame while the window is still card-sized
+        pill = pill.moveTo(left, top)
+        idleFrame = pill.inflate(margin)
+        island.pill = pill
+        params.x = idleFrame.left
+        params.y = idleFrame.top
+        island.expectFrame(idleFrame)
+        hostWm?.updateViewLayout(r, params)
+    }
+
+    override fun onDragStart() {
+        Choreographer.getInstance().removeFrameCallback(settleFrame)
+    }
+
+    override fun onDrag(dx: Float, dy: Float) {
+        if (!windowIsIdle) return // one finger on the card (or a closing card) does not move it; two fingers do
+        movePillTo(pill.left + dx.toInt(), pill.top + dy.toInt())
+    }
+
+    override fun onDragEnd(vx: Float, vy: Float) {
+        if (!windowIsIdle) return
+        val dock = dock()
+        val target = if (IslandGeometry.shouldDock(pill, dock, density)) {
+            prefs.saveDocked()
+            buzz()
+            dock
+        } else {
+            clamp(pill).also { prefs.saveCustom(it) }
+        }
+        settleTo(target)
+    }
+
+    private fun settleTo(target: Box) {
+        settleFrom = pill
+        settleTo = target
+        settleSpring.snapTo(0f)
+        settleSpring.target = 1f
+        settleLastMs = SystemClock.uptimeMillis()
+        Choreographer.getInstance().removeFrameCallback(settleFrame)
+        Choreographer.getInstance().postFrameCallback(settleFrame)
+    }
+
+    override fun onTwoFingerDrag(dx: Float, dy: Float) {
+        val ix = dx.toInt()
+        val iy = dy.toInt()
+        if (ix == 0 && iy == 0) return
+        if (windowIsIdle) {
+            movePillTo(pill.left + ix, pill.top + iy)
+            return
+        }
+        // Expanded: move the whole island (pill, card and window together; the drawing stays identical).
+        val r = root ?: return
+        pill = pill.offset(ix, iy)
+        idleFrame = pill.inflate(margin)
+        expandedFrame = expandedFrame.offset(ix, iy)
+        island.pill = pill
+        island.card = island.card.offset(ix, iy)
+        params.x = expandedFrame.left
+        params.y = expandedFrame.top
+        island.expectFrame(expandedFrame)
+        hostWm?.updateViewLayout(r, params)
+    }
+
+    override fun onTwoFingerEnd() {
+        if (!windowIsIdle) {
+            prefs.saveCustom(pill)
+            return
+        }
+        val target = clamp(pill)
+        prefs.saveCustom(target)
+        settleTo(target)
+    }
+
+    override fun onFlingUp(): Boolean {
+        if (!island.isExpandedOrOpening) return false // hiding the pill by fling is an opt-in setting (phase 4)
+        collapseCard()
+        return true
+    }
+
+    override fun onLongPress() {
+        buzz() // listening (STT) arrives in phase 2; for now Mouou reacts with a squash and a tick
+    }
+
+    private fun redock() {
+        prefs.saveDocked()
+        if (!windowIsIdle) {
+            redockAfterCollapse = true // move only once the window is pill-sized again
+            collapseCard()
+            return
+        }
+        settleTo(dock())
+    }
+
+    private fun buzz() {
+        val v = getSystemService(Vibrator::class.java) ?: return
+        if (!v.hasVibrator()) return
+        val effect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+        } else {
+            VibrationEffect.createOneShot(15, VibrationEffect.DEFAULT_AMPLITUDE) // EFFECT_TICK needs API 29
+        }
+        v.vibrate(effect)
     }
 
     // ---- typing, pinning and timers (spec §3, §5.6) ----
@@ -303,40 +516,49 @@ class IslandService : Service(), IslandView.Listener {
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-            windowManager.updateViewLayout(r, params)
+            hostWm?.updateViewLayout(r, params)
             input.post { input.requestFocus(); imm.showSoftInput(input, 0) }
             handler.removeCallbacks(idleCollapse)
         } else {
             imm.hideSoftInputFromWindow(input.windowToken, 0)
             input.clearFocus()
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            windowManager.updateViewLayout(r, params)
+            hostWm?.updateViewLayout(r, params)
         }
     }
 
     // ---- screen facts ----
 
+    private val appWm get() = getSystemService(WINDOW_SERVICE) as WindowManager
+
     private fun screenWidth(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) windowManager.maximumWindowMetrics.bounds.width()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) appWm.maximumWindowMetrics.bounds.width()
         else resources.displayMetrics.widthPixels
 
     private fun screenHeight(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) windowManager.maximumWindowMetrics.bounds.height()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) appWm.maximumWindowMetrics.bounds.height()
         else resources.displayMetrics.heightPixels
 
     private fun statusBarHeight(): Int {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val insets = windowManager.maximumWindowMetrics.windowInsets
-            return insets.getInsets(android.view.WindowInsets.Type.statusBars()).top
+            return appWm.maximumWindowMetrics.windowInsets.getInsets(WindowInsets.Type.statusBars()).top
         }
+        @Suppress("DiscouragedApi", "InternalInsetResource")
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(24f)
+    }
+
+    private fun navBarTop(): Int {
+        val nav = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            appWm.maximumWindowMetrics.windowInsets.getInsets(WindowInsets.Type.navigationBars()).bottom
+        } else 0
+        return screenHeight() - nav
     }
 
     /** The front-camera hole from DisplayCutout.boundingRects: the one touching the top edge. */
     private fun cameraCutout(): Box? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        val cutout = windowManager.maximumWindowMetrics.windowInsets.displayCutout ?: return null
+        val cutout = appWm.maximumWindowMetrics.windowInsets.displayCutout ?: return null
         val rect = cutout.boundingRects.minByOrNull { it.top } ?: return null
         return Box(rect.left, rect.top, rect.right, rect.bottom)
     }
@@ -344,10 +566,10 @@ class IslandService : Service(), IslandView.Listener {
     /** Ask for the fastest refresh mode at the current resolution (120 Hz on the S25 Ultra). */
     private fun highestRefreshModeId(): Int {
         @Suppress("DEPRECATION")
-        val display = windowManager.defaultDisplay ?: return 0
-        val current = display.mode
+        val display = appWm.defaultDisplay ?: return 0
+        val currentMode = display.mode
         return display.supportedModes
-            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+            .filter { it.physicalWidth == currentMode.physicalWidth && it.physicalHeight == currentMode.physicalHeight }
             .maxByOrNull { it.refreshRate }?.modeId ?: 0
     }
 
@@ -375,16 +597,29 @@ class IslandService : Service(), IslandView.Listener {
         private const val CHANNEL_ID = "island"
         private const val NOTIFICATION_ID = 1
         private const val CHAT_IDLE_MS = 25_000L
+        private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
         private const val BASE_FLAGS = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
 
+        private var current: IslandService? = null
+
         @Volatile var running = false
             private set
 
         fun start(context: Context) = context.startForegroundService(Intent(context, IslandService::class.java))
         fun stop(context: Context) = context.stopService(Intent(context, IslandService::class.java))
+
+        /** «رجّع للكاميرا»: back to the dock beside the camera. */
+        fun redock(context: Context) {
+            if (running) context.startService(Intent(context, IslandService::class.java).setAction(ACTION_REDOCK))
+        }
+
+        /** Called by ScreenService on the main thread when it connects or disconnects. */
+        fun onAccessibilityChanged() {
+            current?.switchHost()
+        }
     }
 }

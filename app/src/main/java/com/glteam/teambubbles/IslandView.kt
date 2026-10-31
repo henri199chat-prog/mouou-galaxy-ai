@@ -29,6 +29,13 @@ class IslandView(context: Context) : View(context) {
 
     interface Listener {
         fun onPillTap()
+        fun onLongPress()
+        fun onDragStart()
+        fun onDrag(dx: Float, dy: Float)
+        fun onDragEnd(vx: Float, vy: Float)
+        fun onFlingUp(): Boolean
+        fun onTwoFingerDrag(dx: Float, dy: Float)
+        fun onTwoFingerEnd()
         fun onWindowApplied()
         fun onProgress(progress: Float)
         fun onCollapsed()
@@ -68,14 +75,30 @@ class IslandView(context: Context) : View(context) {
     private var bodyGradientHeight = Float.NaN
     private var cardGlowRadius = Float.NaN
 
-    // Touch: a tap is a short press that moves less than slop × 3 (spec §6). Full gestures come in step 1.4.
-    private val tapSlop = ViewConfiguration.get(context).scaledTouchSlop * 3
-    private val longPressMs = ViewConfiguration.getLongPressTimeout()
-    private var downX = 0f
-    private var downY = 0f
-    private var downAt = 0L
+    // Touch (spec §6): raw screen coordinates, slop = touchSlop × 3, long-press 480 ms.
+    private val gestures = GestureEngine(
+        slopPx = ViewConfiguration.get(context).scaledTouchSlop * 3f,
+        longPressMs = LONG_PRESS_MS,
+        density = density,
+        callbacks = GestureBridge(),
+    )
+    private val longPressCheck = Runnable { gestures.tick(SystemClock.uptimeMillis()) }
+
+    // Drag life: Mouou stretches along the direction he is dragged, then lands with a squash.
+    private var dragVx = 0f
+    private var dragVy = 0f
+    private var stretch = 0f
 
     val isExpandedOrOpening get() = spring.target > 0f
+    val isFingerDown get() = gestures.isFingerDown
+
+    /** Closes instantly, without animation (used when the window moves to another host). */
+    fun snapClosed() {
+        spring.snapTo(0f)
+        wasOpen = false
+        landed = false
+        invalidate()
+    }
 
     /** Tell the view the window frame the service is about to apply (absolute screen box). */
     fun expectFrame(frame: Box) {
@@ -151,6 +174,9 @@ class IslandView(context: Context) : View(context) {
         }
         val goal = if (attentive) 1f else 0f
         attention += (goal - attention) * (frameDt / 140f).coerceAtMost(1f)
+        val speed = kotlin.math.hypot(dragVx, dragVy)
+        val stretchGoal = (speed / (2500f * density)).coerceAtMost(1f) * MAX_DRAG_STRETCH
+        stretch += (stretchGoal - stretch) * (frameDt / 90f).coerceAtMost(1f)
 
         canvas.save()
         canvas.translate(-originX.toFloat(), -originY.toFloat())
@@ -166,7 +192,7 @@ class IslandView(context: Context) : View(context) {
 
         // Pacing (battery): every vsync while morphing, 30 fps for the idle breathing, nothing with the screen off.
         if (!isAttachedToWindow || !screenOn) return
-        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f
+        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f
         if (moving || easingAttention || bounce.active(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
 
@@ -261,7 +287,11 @@ class IslandView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(cx + w * bounce.offsetX(now), cy + h * bounce.offsetY(now))
         // Breathing and reactions squash/stretch around the bottom edge, keeping the volume constant.
-        canvas.scale((2f - breath) * (2f - squash), breath * squash, 0f, h / 2)
+        // Dragging stretches him along the movement (horizontal or vertical), keeping the volume.
+        val horizontal = kotlin.math.abs(dragVx) >= kotlin.math.abs(dragVy)
+        val sxDrag = if (horizontal) 1f + stretch else 1f - stretch * 0.6f
+        val syDrag = if (horizontal) 1f - stretch * 0.6f else 1f + stretch
+        canvas.scale((2f - breath) * (2f - squash) * sxDrag, breath * squash * syDrag, 0f, h / 2)
 
         val g = 2f * density
         canvas.drawRoundRect(body.left - g, body.top - g, body.right + g, body.bottom + g, corner + g, corner + g, bodyGlowPaint)
@@ -283,18 +313,68 @@ class IslandView(context: Context) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Raw screen coordinates for every pointer (window moves during a drag must not distort deltas).
+        val offX = event.rawX - event.getX(0)
+        val offY = event.rawY - event.getY(0)
+        val t = event.eventTime
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                downX = event.rawX
-                downY = event.rawY
-                downAt = event.eventTime
+                gestures.down(t, event.rawX, event.rawY)
+                removeCallbacks(longPressCheck)
+                postDelayed(longPressCheck, LONG_PRESS_MS)
             }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                removeCallbacks(longPressCheck)
+                if (event.pointerCount >= 2) {
+                    gestures.pointerDown(
+                        (event.getX(0) + event.getX(1)) / 2 + offX,
+                        (event.getY(0) + event.getY(1)) / 2 + offY,
+                    )
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (event.pointerCount >= 2) {
+                gestures.move(t, (event.getX(0) + event.getX(1)) / 2 + offX, (event.getY(0) + event.getY(1)) / 2 + offY)
+            } else {
+                gestures.move(t, event.rawX, event.rawY)
+            }
+            MotionEvent.ACTION_POINTER_UP -> gestures.pointerUp()
             MotionEvent.ACTION_UP -> {
-                val moved = abs(event.rawX - downX) > tapSlop || abs(event.rawY - downY) > tapSlop
-                if (!moved && event.eventTime - downAt < longPressMs) onTap(event.eventTime)
+                removeCallbacks(longPressCheck)
+                gestures.up(t, event.rawX, event.rawY)
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(longPressCheck)
+                gestures.cancel()
             }
         }
         return true
+    }
+
+    private inner class GestureBridge : GestureEngine.Callbacks {
+        override fun onTap() = onTap(SystemClock.uptimeMillis())
+        override fun onLongPress() {
+            bounce.land(SystemClock.uptimeMillis()) // a little "I'm listening" squash; voice comes in phase 2
+            kick()
+            listener?.onLongPress()
+        }
+        override fun onLongPressEnd(heldMs: Long) = Unit
+        override fun onDragStart() { listener?.onDragStart() }
+        override fun onDrag(dx: Float, dy: Float, vx: Float, vy: Float) {
+            dragVx = vx
+            dragVy = vy
+            listener?.onDrag(dx, dy)
+            kick()
+        }
+        override fun onDragEnd(vx: Float, vy: Float) {
+            dragVx = 0f
+            dragVy = 0f
+            bounce.land(SystemClock.uptimeMillis())
+            kick()
+            listener?.onDragEnd(vx, vy)
+        }
+        override fun onFlingUp(): Boolean = listener?.onFlingUp() ?: false
+        override fun onTwoFingerDrag(dx: Float, dy: Float) { listener?.onTwoFingerDrag(dx, dy) }
+        override fun onTwoFingerEnd() { listener?.onTwoFingerEnd() }
     }
 
     /** A tap on the pill opens the card; 5 taps within 1.3 s make Mouou shake (spec §5.5). */
@@ -312,6 +392,8 @@ class IslandView(context: Context) : View(context) {
 
     private companion object {
         const val IDLE_FRAME_MS = 33L
+        const val LONG_PRESS_MS = 480L
+        const val MAX_DRAG_STRETCH = 0.12f
         const val PAUSE_MS = 50L
         const val TAPS_FOR_SHAKE = 5
         const val SHAKE_WINDOW_MS = 1300L
