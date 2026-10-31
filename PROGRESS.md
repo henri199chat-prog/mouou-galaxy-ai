@@ -27,12 +27,12 @@ Read this first in every session. Update it before the session ends.
 - Package stays `com.glteam.teambubbles`, versionCode 14 / 2.2.1 (spec §1).
 - minSdk 26, targetSdk 35, compileSdk 36 (spec §2). Compose BOM 2025.12.01, activity-compose 1.11.0, Kotlin 2.2.21, AGP 8.13.0, Gradle 8.14.3, OkHttp 4.12.0.
 - ntfy topic is a setting, never hard-coded (public repo).
+- Signing (Ayman, 2026-10-31): **new key**, made by Claude, stored in `app-keys/mouou/` (`mouou-release.jks` + `keystore.properties`, alias `mouou`, valid to 2054). SHA-256 `8d:62:78:44:81:be:d6:27:ac:e3:04:15:7d:3b:c0:d1:3c:56:9e:6f:a3:89:ec:df:1f:d0:9f:a5:8a:71:61:dd`. The old v2.2.0 (APKMEN key) must be uninstalled once before installing 2.2.1. Never make another key.
 
 ## Open questions for Ayman
 
-- Signing key: the old v2.2.0 key is with APKMEN and was not shared. Either put it in `app-keys/mouou/` (updates install over the old app) or we make a new key and he uninstalls the old app once. **Not decided yet.**
 - Design pack `Mouou_Galaxy_AI_design_pack.zip` not received yet (needed for exact visuals; phase 3 depends on it).
 
 ## Session log
 
-- **Session 1 (2026-10-31):** read the spec; created the project skeleton (step 1.1); build + test pass. Waiting for the public repo `mouou-galaxy-ai` to push. Next: step 1.2.
+- **Session 1 (2026-10-31):** read the spec; created the project skeleton (step 1.1); build + test pass. Repo `mouou-galaxy-ai` created (public) and pushed; spec saved privately in `app-keys/mouou/spec.pdf`; new signing key created in `app-keys/mouou/`. Next: step 1.2.
