@@ -5,81 +5,289 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import kotlin.math.abs
+import kotlin.math.sin
 
 /**
- * The idle island: a plain black pill (spec §5.3: radius h/2, #000000) with a mini Mouou inside.
- * The view fills its window; the pill is inset by the touch margin so taps just outside it still land.
- * Idle state with Mouou's life (breathing, blinking, glancing) redrawn every vsync while attached;
- * morphing and gestures come in steps 1.3 and 1.4.
+ * Draws the island in every size between the idle pill and the chat card (spec §5).
+ *
+ * Positions are kept in ABSOLUTE screen pixels ([pill], [card]) and drawn relative to the window's
+ * origin, which only changes in [onSizeChanged] when the new window size has really been applied.
+ * So a window resize/move and the drawing that matches it always land in the same frame: no blank
+ * frame, no jump (spec §5.5).
  */
 @SuppressLint("ViewConstructor")
-class IslandView(context: Context, private val touchMarginPx: Float) : View(context) {
+class IslandView(context: Context) : View(context) {
 
-    private val density = resources.displayMetrics.density
-    private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
-    private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x5599FFFF; style = Paint.Style.FILL }
-    private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF101014.toInt() }
-    private val pill = RectF()
-    private val body = RectF()
-    private val eye = RectF()
-    private val life = MascotLife()
-    private var gradientTop = Float.NaN
-    private var gradientBottom = Float.NaN
-
-    override fun onDraw(canvas: Canvas) {
-        pill.set(touchMarginPx, touchMarginPx, width - touchMarginPx, height - touchMarginPx)
-        val r = pill.height() / 2f
-        canvas.drawRoundRect(pill, r, r, pillPaint)
-        val now = SystemClock.uptimeMillis()
-        drawMiniMascot(canvas, pill.centerX(), pill.centerY(), pill.height() * 0.80f, now)
-        if (isAttachedToWindow) postInvalidateOnAnimation()
+    interface Listener {
+        fun onPillTap()
+        fun onWindowApplied()
+        fun onProgress(progress: Float)
+        fun onCollapsed()
     }
 
-    /** Mini Mouou (spec §4): rounded-square mochi blob ≈ 1.25 : 1, white gradient, two vertical black ovals. */
-    private fun drawMiniMascot(canvas: Canvas, cx: Float, cy: Float, heightPx: Float, now: Long) {
-        val h = heightPx * 0.78f
+    var listener: Listener? = null
+    var pill = Box(0, 0, 0, 0)
+    var card = Box(0, 0, 0, 0)
+
+    private val density = resources.displayMetrics.density
+    private val spring = MorphSpring()
+    private val life = MascotLife()
+    private var originX = 0
+    private var originY = 0
+    private var pendingFrame: Box? = null
+    private var lastFrameMs = 0L
+    private var screenOn = true
+    private var wasOpen = false
+
+    private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
+    private val spacePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val starPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
+    private val cardGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bodyGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x5599FFFF }
+    private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF101014.toInt() }
+    private val shape = RectF()
+    private val body = RectF()
+    private val eye = RectF()
+    private val clip = Path()
+    private var bodyGradientHeight = Float.NaN
+    private var cardGlowRadius = Float.NaN
+
+    // Touch: a tap is a short press that moves less than slop × 3 (spec §6). Full gestures come in step 1.4.
+    private val tapSlop = ViewConfiguration.get(context).scaledTouchSlop * 3
+    private val longPressMs = ViewConfiguration.getLongPressTimeout()
+    private var downX = 0f
+    private var downY = 0f
+    private var downAt = 0L
+
+    val isExpandedOrOpening get() = spring.target > 0f
+
+    /** Tell the view the window frame the service is about to apply (absolute screen box). */
+    fun expectFrame(frame: Box) {
+        pendingFrame = frame
+        if (width == frame.width && height == frame.height) applyFrame(frame) // same size: no onSizeChanged
+    }
+
+    fun expand() {
+        spring.target = 1f
+        kick()
+    }
+
+    fun collapse() {
+        spring.target = 0f
+        kick()
+    }
+
+    fun setScreenOn(on: Boolean) {
+        screenOn = on
+        if (on) kick()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        pendingFrame?.let { if (it.width == w && it.height == h) applyFrame(it) }
+    }
+
+    private fun applyFrame(frame: Box) {
+        originX = frame.left
+        originY = frame.top
+        pendingFrame = null
+        invalidate()
+        post { listener?.onWindowApplied() }
+    }
+
+    private fun kick() {
+        lastFrameMs = 0L
+        postInvalidateOnAnimation()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val now = SystemClock.uptimeMillis()
+        var moving = if (spring.isSettled) false else {
+            val dt = if (lastFrameMs == 0L) 8.33f else (now - lastFrameMs).toFloat()
+            spring.step(dt)
+        }
+        // Closing lands cleanly on the pill: no undershoot that would squeeze the pill for a few frames.
+        if (spring.target == 0f && spring.value < 0f) {
+            spring.snapTo(0f)
+            moving = false
+        }
+        lastFrameMs = now
+        val p = spring.value
+
+        canvas.save()
+        canvas.translate(-originX.toFloat(), -originY.toFloat())
+        drawShape(canvas, p, now)
+        canvas.restore()
+
+        listener?.onProgress(p)
+        if (p > 0f) wasOpen = true
+        if (!moving && spring.target == 0f && p == 0f && wasOpen) {
+            wasOpen = false
+            post { listener?.onCollapsed() }
+        }
+
+        // Pacing (battery): every vsync while morphing, 30 fps for the idle breathing, nothing with the screen off.
+        if (!isAttachedToWindow || !screenOn) return
+        if (moving) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
+    }
+
+    private fun drawShape(canvas: Canvas, p: Float, now: Long) {
+        val lerp = IslandGeometry::lerp
+        val pc = p.coerceIn(0f, 1f)
+        // The spring's overshoot only stretches the bottom edge: the card "drops" and bounces down,
+        // its sides never swing past the screen edges.
+        shape.set(
+            lerp(pill.left.toFloat(), card.left.toFloat(), pc),
+            lerp(pill.top.toFloat(), card.top.toFloat(), pc),
+            lerp(pill.right.toFloat(), card.right.toFloat(), pc),
+            lerp(pill.bottom.toFloat(), card.bottom.toFloat(), p),
+        )
+        val radius = lerp(pill.height / 2f, CARD_RADIUS_DP * density, pc)
+        val idleMascotH = pill.height * 0.80f * 0.78f
+
+        if (p <= 0f) {
+            canvas.drawRoundRect(shape, radius, radius, pillPaint)
+            drawMascot(canvas, shape.centerX(), shape.centerY(), idleMascotH, now)
+            return
+        }
+
+        // Card space: black-blue space, twinkling stars and a soft glow behind Mouou (spec §5.4).
+        clip.reset()
+        clip.addRoundRect(shape, radius, radius, Path.Direction.CW)
+        canvas.save()
+        canvas.clipPath(clip)
+        spacePaint.color = blend(0xFF000000.toInt(), 0xFF030308.toInt(), pc)
+        canvas.drawRect(shape, spacePaint)
+
+        // Mouou travels from the pill into the card (same object, continuous).
+        val mascotCx = lerp(pill.centerX.toFloat(), card.left + (CARD_PAD_DP + MASCOT_DP / 2) * density, pc)
+        val mascotCy = lerp(pill.centerY.toFloat(), card.centerY.toFloat(), pc)
+        val mascotH = lerp(idleMascotH, MASCOT_DP * density / 1.25f, pc)
+
+        drawCardGlow(canvas, mascotCx, mascotCy, pc)
+        drawStars(canvas, now, pc)
+        drawMascot(canvas, mascotCx, mascotCy, mascotH, now)
+        canvas.restore()
+    }
+
+    private fun drawCardGlow(canvas: Canvas, cx: Float, cy: Float, p: Float) {
+        val r = card.width * 0.62f
+        if (r <= 0f) return
+        if (r != cardGlowRadius) {
+            // Built only when the card size changes; positioned by translating the canvas (no per-frame allocation).
+            cardGlowRadius = r
+            cardGlowPaint.shader = RadialGradient(
+                0f, 0f, r,
+                intArrayOf(withAlpha(GLOW_COLOR, 0.42f), withAlpha(GLOW_COLOR, 0.13f), withAlpha(GLOW_COLOR, 0f)),
+                floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP,
+            )
+        }
+        cardGlowPaint.alpha = (255 * p).toInt()
+        canvas.save()
+        canvas.translate(cx, cy)
+        canvas.drawCircle(0f, 0f, r, cardGlowPaint)
+        canvas.restore()
+    }
+
+    private fun drawStars(canvas: Canvas, now: Long, p: Float) {
+        val w = card.width.toFloat()
+        val h = card.height.toFloat()
+        for (i in STARS.indices step 4) {
+            val x = card.left + STARS[i] * w
+            val y = card.top + STARS[i + 1] * h
+            val size = (0.6f + STARS[i + 2]) * density // 0.6–1.6 dp
+            val period = 2000L + (STARS[i + 3] * 3000f).toLong() // 2–5 s
+            val phase = (now % period) / period.toFloat()
+            val twinkle = 0.55f + 0.35f * sin(2.0 * Math.PI * phase + i).toFloat() // alpha 0.2–0.9
+            starPaint.alpha = (255 * twinkle * p).toInt()
+            canvas.drawCircle(x, y, size / 2f, starPaint)
+        }
+    }
+
+    /** Mouou (spec §4): rounded-square blob ≈ 1.25 : 1, white gradient, two black ovals. No mouth, no hands. */
+    private fun drawMascot(canvas: Canvas, cx: Float, cy: Float, h: Float, now: Long) {
         val w = h * 1.25f
-        body.set(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+        body.set(-w / 2, -h / 2, w / 2, h / 2)
         val corner = h * 0.42f
-        if (gradientTop != body.top || gradientBottom != body.bottom) {
-            // Built only when the size changes: no allocations per frame (spec §18).
-            gradientTop = body.top
-            gradientBottom = body.bottom
+        if (h != bodyGradientHeight) {
+            bodyGradientHeight = h
             bodyPaint.shader = LinearGradient(
-                0f, body.top, 0f, body.bottom,
+                0f, -h / 2, 0f, h / 2,
                 intArrayOf(0xFFFFFFFF.toInt(), 0xFFF7F8FA.toInt(), 0xFFE4E7EE.toInt()),
                 floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP,
             )
         }
-
-        // Breathing: stretch up and slim down around the bottom edge, so it looks soft rather than zooming.
         val breath = life.breath(now)
         canvas.save()
-        canvas.scale(2f - breath, breath, cx, body.bottom)
+        canvas.translate(cx, cy)
+        canvas.scale(2f - breath, breath, 0f, h / 2) // squash and stretch around the bottom edge
 
         val g = 2f * density
-        canvas.drawRoundRect(body.left - g, body.top - g, body.right + g, body.bottom + g, corner + g, corner + g, glowPaint)
+        canvas.drawRoundRect(body.left - g, body.top - g, body.right + g, body.bottom + g, corner + g, corner + g, bodyGlowPaint)
         canvas.drawRoundRect(body, corner, corner, bodyPaint)
 
-        // Eyes: centres at ±13.5 % of body width, 56 % of body height; blinks squash them, glances move them.
         val look = life.look(now)
         val eyeW = w * 0.10f
         val eyeH = (h * 0.26f * life.eyeOpenness(now)).coerceAtLeast(eyeW * 0.25f)
         val eyeY = body.top + h * (0.56f + look.y)
         for (dx in EYE_OFFSETS) {
-            val ex = cx + w * (dx + look.x)
+            val ex = w * (dx + look.x)
             eye.set(ex - eyeW / 2, eyeY - eyeH / 2, ex + eyeW / 2, eyeY + eyeH / 2)
             canvas.drawOval(eye, eyePaint)
         }
         canvas.restore()
     }
 
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (isExpandedOrOpening) return true // the card swallows touches on its empty space
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.rawX
+                downY = event.rawY
+                downAt = event.eventTime
+            }
+            MotionEvent.ACTION_UP -> {
+                val moved = abs(event.rawX - downX) > tapSlop || abs(event.rawY - downY) > tapSlop
+                if (!moved && event.eventTime - downAt < longPressMs) listener?.onPillTap()
+            }
+        }
+        return true
+    }
+
     private companion object {
+        const val IDLE_FRAME_MS = 33L
+        const val CARD_RADIUS_DP = 30f
+        const val CARD_PAD_DP = 12f
+        const val MASCOT_DP = 48f
+        const val GLOW_COLOR = 0xFF6A3FD0.toInt()
         val EYE_OFFSETS = floatArrayOf(-0.135f, 0.135f)
+
+        /** 14 stars as (x, y fraction of the card, size 0–1, period 0–1). Fixed so they never jump. */
+        val STARS = floatArrayOf(
+            0.22f, 0.18f, 0.2f, 0.1f, 0.35f, 0.72f, 0.6f, 0.5f, 0.48f, 0.12f, 0.9f, 0.3f,
+            0.57f, 0.55f, 0.3f, 0.8f, 0.66f, 0.22f, 0.5f, 0.2f, 0.74f, 0.82f, 0.1f, 0.65f,
+            0.81f, 0.4f, 0.8f, 0.4f, 0.9f, 0.15f, 0.4f, 0.9f, 0.95f, 0.66f, 0.2f, 0.35f,
+            0.29f, 0.9f, 0.7f, 0.05f, 0.42f, 0.35f, 0.1f, 0.7f, 0.62f, 0.9f, 1.0f, 0.25f,
+            0.86f, 0.12f, 0.5f, 0.55f, 0.16f, 0.6f, 0.3f, 0.45f,
+        )
+
+        fun withAlpha(color: Int, a: Float) = (color and 0x00FFFFFF) or ((255 * a).toInt() shl 24)
+
+        fun blend(from: Int, to: Int, t: Float): Int {
+            fun ch(c: Int, s: Int) = (c shr s) and 0xFF
+            fun mix(s: Int) = (ch(from, s) + (ch(to, s) - ch(from, s)) * t).toInt() shl s
+            return mix(24) or mix(16) or mix(8) or mix(0)
+        }
     }
 }
