@@ -65,6 +65,13 @@ class IslandService : Service(), IslandView.Listener {
     private val handler = Handler(Looper.getMainLooper())
     private val idleCollapse = Runnable { if (!busy && CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
     private val autoHide = Runnable { hideIsland() }
+    private var inCameraZone = false // hidden, and the window shrank to the camera hole (tap it to show Mouou)
+    private val moveToCameraZone = Runnable {
+        val cam = cameraCutout() ?: return@Runnable
+        if (!island.isHiddenOrHiding || !usingAccessibility) return@Runnable
+        inCameraZone = true
+        applyFrame(cameraTapZone(cam, statusBarHeight(), dp(14f), screenWidth()))
+    }
 
     // Brain (spec §10): one background thread, one request per message.
     private val brainThread = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -205,8 +212,10 @@ class IslandService : Service(), IslandView.Listener {
         setParamsFrame(idleFrame)
         windowIsIdle = true
         params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        island.show()
+        handler.removeCallbacks(moveToCameraZone)
+        inCameraZone = false
         addWindow()
+        emerge()
         noteActivity()
     }
 
@@ -253,7 +262,14 @@ class IslandService : Service(), IslandView.Listener {
         root = rootView
         addWindow()
         running = true
+        emerge()
         noteActivity()
+    }
+
+    /** Come out of the camera (or out of the pill's own centre when the phone reports no camera hole). */
+    private fun emerge() {
+        val cam = cameraCutout()
+        island.emergeFrom((cam?.centerX ?: pill.centerX).toFloat(), (cam?.centerY ?: pill.centerY).toFloat())
     }
 
     /** Dock: beside the camera above the status bar (accessibility host), or just below the status bar. */
@@ -350,10 +366,18 @@ class IslandService : Service(), IslandView.Listener {
             // (With the accessibility host the spot beside the camera stays tappable to show Mouou again.)
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             root?.let { hostWm?.updateViewLayout(it, params) }
+        } else {
+            // Once fully hidden, the window becomes the camera hole itself: tap the camera to bring Mouou back.
+            handler.postDelayed(moveToCameraZone, VisibilityAnim.DURATION_MS + 40)
         }
     }
 
     private fun revealIsland() {
+        handler.removeCallbacks(moveToCameraZone)
+        if (inCameraZone) {
+            inCameraZone = false
+            applyFrame(idleFrame) // back to the pill's window; drawing follows the real window position
+        }
         if (params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0) {
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             root?.let { hostWm?.updateViewLayout(it, params) }
@@ -536,6 +560,7 @@ class IslandService : Service(), IslandView.Listener {
 
     private fun redock() {
         prefs.saveDocked()
+        if (island.isHiddenOrHiding) revealIsland() // bring him out first, then back to the camera
         if (!windowIsIdle) {
             redockAfterCollapse = true // move only once the window is pill-sized again
             collapseCard()

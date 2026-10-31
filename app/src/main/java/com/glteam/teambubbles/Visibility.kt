@@ -11,6 +11,13 @@ class VisibilityAnim(initiallyShown: Boolean = true) {
     private var startMs = 0L
 
     fun show(nowMs: Long) = animateTo(1f, nowMs)
+
+    /** Instantly hidden (no animation): the starting point of an emerge-from-the-camera. */
+    fun snapHidden(nowMs: Long) {
+        from = 0f
+        to = 0f
+        startMs = nowMs - DURATION_MS
+    }
     fun hide(nowMs: Long) = animateTo(0f, nowMs)
 
     val target get() = to
@@ -40,6 +47,17 @@ class VisibilityAnim(initiallyShown: Boolean = true) {
         }
     }
 }
+
+/**
+ * While hidden, the spot to tap to bring Mouou back is the camera hole itself (Ayman, 2026-10-31):
+ * the hole plus a comfortable margin, from the top of the screen to the bottom of the status bar.
+ */
+fun cameraTapZone(cutout: Box, statusBarBottom: Int, margin: Int, screenWidth: Int): Box = Box(
+    (cutout.left - margin).coerceAtLeast(0),
+    0,
+    (cutout.right + margin).coerceAtMost(screenWidth),
+    maxOf(cutout.bottom + margin / 2, statusBarBottom),
+)
 
 /** Auto-hide choices in settings (0 = never). */
 object HideAfter {

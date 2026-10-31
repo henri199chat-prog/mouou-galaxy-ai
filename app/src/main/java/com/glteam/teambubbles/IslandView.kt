@@ -67,6 +67,7 @@ class IslandView(context: Context) : View(context) {
     private val visibility = VisibilityAnim()
     private var anchorX = Float.NaN // where the pill shrinks to when hiding (the camera), screen px
     private var anchorY = Float.NaN
+    private var settleAfterShow = false
     private var lookTargetY = 0f
     private var lastFrameMs = 0L
     private var screenOn = true
@@ -111,9 +112,21 @@ class IslandView(context: Context) : View(context) {
         kick()
     }
 
-    /** Show again: the exact reverse of hiding. */
+    /** Show again: the exact reverse of hiding (out of the camera). */
     fun show() {
         visibility.show(SystemClock.uptimeMillis())
+        settleAfterShow = true
+        kick()
+    }
+
+    /** Appear by coming out of the camera at ([ax], [ay]): used when the island starts or changes host. */
+    fun emergeFrom(ax: Float, ay: Float) {
+        anchorX = ax
+        anchorY = ay
+        val now = SystemClock.uptimeMillis()
+        visibility.snapHidden(now)
+        visibility.show(now)
+        settleAfterShow = true
         kick()
     }
     val isFingerDown get() = gestures.isFingerDown
@@ -218,6 +231,10 @@ class IslandView(context: Context) : View(context) {
         if (spring.target == 1f && !moving && !landed) {
             landed = true
             bounce.land(now) // soft squash when the card has finished dropping
+        }
+        if (settleAfterShow && visibility.target == 1f && !visibility.animating(now)) {
+            settleAfterShow = false
+            bounce.land(now) // out of the camera: a soft little settle, like landing in place
         }
         val glancingAtReply = !attentive && !thinking && now < replyGlanceUntil
         val goal = if (attentive || thinking || glancingAtReply) 1f else 0f

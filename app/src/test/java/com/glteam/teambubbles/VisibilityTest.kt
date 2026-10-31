@@ -47,4 +47,22 @@ class VisibilityTest {
         for (ms in HideAfter.CHOICES_MS) assertTrue(HideAfter.label(ms).isNotBlank())
         assertEquals("أبدًا", HideAfter.label(0))
     }
+
+    @Test fun emergeStartsHiddenThenGrowsOut() {
+        val v = VisibilityAnim()
+        v.snapHidden(1000)
+        assertEquals(0f, v.value(1000), 0f)
+        v.show(1000)
+        assertTrue(v.value(1100) in 0.01f..0.99f)
+        assertEquals(1f, v.value(1000 + VisibilityAnim.DURATION_MS), 0f)
+    }
+
+    @Test fun cameraTapZoneCoversTheHoleAndTheStatusBar() {
+        val hole = Box(700, 40, 740, 80)
+        val z = cameraTapZone(hole, statusBarBottom = 130, margin = 49, screenWidth = 1440)
+        assertTrue(z.left <= hole.left && z.right >= hole.right)
+        assertEquals(0, z.top)
+        assertEquals(130, z.bottom)
+        assertTrue(z.width < 200) // small: the rest of the status bar stays free
+    }
 }
