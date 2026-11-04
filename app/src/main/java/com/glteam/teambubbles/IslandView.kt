@@ -30,6 +30,7 @@ class IslandView(context: Context) : View(context) {
     interface Listener {
         fun onPillTap()
         fun onLongPress()
+        fun onLongPressEnd(heldMs: Long)
         fun onDragStart()
         fun onDrag(dx: Float, dy: Float)
         fun onDragEnd(vx: Float, vy: Float)
@@ -75,6 +76,16 @@ class IslandView(context: Context) : View(context) {
     private val sparklePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
     private val tearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC4F8DFF.toInt() }
     private var scanning = false
+    private var listening = false
+    private var voiceTarget = 0f
+    private var voiceLevel = 0f
+    private var listenTilt = 0f
+    private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val waveRect = RectF()
     private val scanPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var scanRadius = Float.NaN
     private val visibility = VisibilityAnim()
@@ -213,6 +224,18 @@ class IslandView(context: Context) : View(context) {
         kick()
     }
 
+    /** Listening face (spec §11): head tilted like an ear turned to Ayman, sound arcs following his voice. No hand. */
+    fun setListening(on: Boolean) {
+        listening = on
+        if (!on) voiceTarget = 0f
+        kick()
+    }
+
+    /** Ayman's voice level 0…1 while listening (drives the arcs). */
+    fun setVoiceLevel(level: Float) {
+        voiceTarget = level
+    }
+
     /** Scanning face (spec §11): eyes down, a blue light under him, while he looks at the screen. */
     fun setScanning(on: Boolean) {
         scanning = on
@@ -273,6 +296,8 @@ class IslandView(context: Context) : View(context) {
         val speed = kotlin.math.hypot(dragVx, dragVy)
         val stretchGoal = (speed / (2500f * density)).coerceAtMost(1f) * MAX_DRAG_STRETCH
         stretch += (stretchGoal - stretch) * (frameDt / 90f).coerceAtMost(1f)
+        listenTilt += ((if (listening) 1f else 0f) - listenTilt) * (frameDt / 160f).coerceAtMost(1f)
+        voiceLevel += (voiceTarget - voiceLevel) * (frameDt / 70f).coerceAtMost(1f)
 
         canvas.save()
         canvas.translate(-originX.toFloat(), -originY.toFloat())
@@ -294,7 +319,8 @@ class IslandView(context: Context) : View(context) {
             postInvalidateOnAnimation()
             return
         }
-        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f || pendingFrame != null
+        val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f || pendingFrame != null ||
+            listening || listenTilt > 0.01f
         if (moving || easingAttention || bounce.active(now) || face.animating(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
 
@@ -504,6 +530,19 @@ class IslandView(context: Context) : View(context) {
         canvas.drawPath(eyePath, bodyPaint)
     }
 
+    /** Three white arcs on Mouou's right side, growing with Ayman's voice (spec §11 "listening"). */
+    private fun drawSoundArcs(canvas: Canvas, w: Float, h: Float, now: Long) {
+        wavePaint.strokeWidth = w * 0.05f
+        val baseX = w * 0.62f
+        for (i in 0 until 3) {
+            val phase = 0.5f + 0.5f * kotlin.math.sin(2.0 * Math.PI * ((now % 600L) / 600.0) - i * 0.9).toFloat()
+            val r = h * (0.18f + 0.16f * i) * (0.75f + 0.5f * voiceLevel)
+            wavePaint.alpha = (255 * listenTilt * (0.35f + 0.65f * voiceLevel) * (0.5f + 0.5f * phase) * (1f - i * 0.22f)).toInt()
+            waveRect.set(baseX - r, -r, baseX + r, r)
+            canvas.drawArc(waveRect, -40f, 80f, false, wavePaint)
+        }
+    }
+
     /** Soft blue light under Mouou while he reads the screen (#5AA8FF → #BFE0FF), pulsing gently. */
     private fun drawScanLight(canvas: Canvas, x: Float, y: Float, bodyW: Float, now: Long) {
         val r = bodyW * 0.9f
@@ -543,6 +582,10 @@ class IslandView(context: Context) : View(context) {
         if (scanning) drawScanLight(canvas, cx, cy + h * 0.62f, w, now)
         val thinkBob = if (thinking) THINK_BOB * kotlin.math.sin(2.0 * Math.PI * (now % THINK_BOB_MS) / THINK_BOB_MS).toFloat() else 0f
         canvas.translate(cx + w * bounce.offsetX(now), cy + h * (bounce.offsetY(now) + thinkBob))
+        if (listenTilt > 0.01f) {
+            drawSoundArcs(canvas, w, h, now)
+            canvas.rotate(LISTEN_TILT_DEG * listenTilt, 0f, h / 2) // leans in, as if turning an ear
+        }
         // Breathing and reactions squash/stretch around the bottom edge, keeping the volume constant.
         // Dragging stretches him along the movement (horizontal or vertical), keeping the volume.
         val horizontal = kotlin.math.abs(dragVx) >= kotlin.math.abs(dragVy)
@@ -610,7 +653,7 @@ class IslandView(context: Context) : View(context) {
             kick()
             listener?.onLongPress()
         }
-        override fun onLongPressEnd(heldMs: Long) = Unit
+        override fun onLongPressEnd(heldMs: Long) { listener?.onLongPressEnd(heldMs) }
         override fun onDragStart() { listener?.onDragStart() }
         override fun onDrag(dx: Float, dy: Float, vx: Float, vy: Float) {
             dragVx = vx
@@ -660,6 +703,7 @@ class IslandView(context: Context) : View(context) {
         const val REPLY_LOOK_Y = -0.05f
         const val REPLY_GLANCE_MS = 1200L
         const val SCAN_LOOK_Y = 0.08f
+        const val LISTEN_TILT_DEG = 8f
         const val THINK_LOOK_X = 0.075f
         const val THINK_LOOK_Y = -0.075f
         const val THINK_BOB = 0.045f

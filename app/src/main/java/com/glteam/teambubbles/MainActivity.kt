@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private var hideAfterMs by mutableStateOf(0L)
     private var notificationsOk by mutableStateOf(true)
     private var batteryOk by mutableStateOf(true)
+    private var micOk by mutableStateOf(false)
     private var side by mutableStateOf(PillSide.RIGHT)
     private val prefs by lazy { IslandPrefs(this) }
     private val vault by lazy { KeyVault(this) }
@@ -81,6 +82,8 @@ class MainActivity : ComponentActivity() {
                 extras = Extras(
                     notificationsOk = notificationsOk,
                     batteryOk = batteryOk,
+                    micOk = micOk,
+                    onMic = { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2) },
                     side = side,
                     version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty(),
                     onNotifications = {
@@ -126,6 +129,8 @@ class MainActivity : ComponentActivity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         batteryOk = getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) ?: true
         side = prefs.side
+        micOk = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (micOk) IslandService.micReady(this) // settings visible = Android allows the microphone service type now
         brain = brain.copy(
             keySaved = vault.has(),
             useSearch = brainSettings.useSearch,
@@ -174,6 +179,14 @@ class MainActivity : ComponentActivity() {
         }.onFailure { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        micOk = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (micOk) IslandService.micReady(this)
+        notificationsOk = Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    }
+
     private fun openOverlaySettings() {
         startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
     }
@@ -210,6 +223,7 @@ private fun SettingsHome(
                 Text("يسمعك، يشوف شاشتك ويجاوبك", color = Color(0xFF8E8E96), fontSize = 15.sp)
                 Text("🔐 الأذونات", color = Color.White, fontSize = 18.sp)
                 PermissionRow("الإشعارات", extras.notificationsOk, extras.onNotifications)
+                PermissionRow("الميكروفون (ضغطة مطوّلة على موو = يسمعك)", extras.micOk, extras.onMic)
                 PermissionRow("تجاهل تحسين البطارية (باش سامسونج ما يسكّروش)", extras.batteryOk, extras.onBattery)
                 if (!canOverlay) {
                     Text("⛔ لازم تعطيه إذن «الظهور فوق التطبيقات»", color = Color(0xFFFF5C6C), fontSize = 14.sp)
@@ -343,6 +357,8 @@ private fun BrainSection(ui: BrainUi, a: BrainActions) {
 class Extras(
     val notificationsOk: Boolean,
     val batteryOk: Boolean,
+    val micOk: Boolean,
+    val onMic: () -> Unit,
     val side: PillSide,
     val version: String,
     val onNotifications: () -> Unit,

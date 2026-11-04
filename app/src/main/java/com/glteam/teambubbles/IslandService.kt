@@ -63,7 +63,7 @@ class IslandService : Service(), IslandView.Listener {
     private var redockAfterCollapse = false
     private var typing = false // true only while the window holds focus for the keyboard
     private val handler = Handler(Looper.getMainLooper())
-    private val idleCollapse = Runnable { if (!busy && CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
+    private val idleCollapse = Runnable { if (!busy && !voice.isListening && CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
     private val autoHide = Runnable { hideIsland() }
     // Left alone for 2 minutes, Mouou dozes off (sleepy face) until the next touch or message.
     private var asleep = false
@@ -88,6 +88,10 @@ class IslandService : Service(), IslandView.Listener {
     private lateinit var vault: KeyVault
     private lateinit var brainSettings: BrainSettings
     private var busy = false
+
+    // Listening (spec §8.2): long-press → the card opens and Mouou listens; speech is sent like typed text.
+    private lateinit var voice: VoiceListener
+    private var listenWhenOpen = false
     private var dots = 0
     private val thinkingDots = object : Runnable {
         override fun run() {
@@ -133,6 +137,7 @@ class IslandService : Service(), IslandView.Listener {
             return
         }
         prefs = IslandPrefs(this)
+        voice = VoiceListener(this, VoiceCallbacks())
         vault = KeyVault(this)
         brainSettings = BrainSettings(this)
         current = this
@@ -156,11 +161,13 @@ class IslandService : Service(), IslandView.Listener {
             }
         }
         if (intent?.action == ACTION_SETTINGS_CHANGED && root != null) noteActivity()
+        if (intent?.action == ACTION_MIC_READY) ensureMicForeground()
         return START_STICKY
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        if (::voice.isInitialized) voice.cancel()
         brainThread.shutdownNow()
         Choreographer.getInstance().removeFrameCallback(settleFrame)
         if (root != null) runCatching { unregisterReceiver(screenReceiver) }
@@ -428,6 +435,10 @@ class IslandService : Service(), IslandView.Listener {
             openingRequested = false
             island.expand()
             restartIdleTimer()
+            if (listenWhenOpen) {
+                listenWhenOpen = false
+                handler.postDelayed({ startListening() }, LISTEN_AFTER_OPEN_MS) // once the card has dropped
+            }
         }
     }
 
@@ -452,6 +463,11 @@ class IslandService : Service(), IslandView.Listener {
 
     private fun collapseCard() {
         handler.removeCallbacks(idleCollapse)
+        listenWhenOpen = false
+        if (::voice.isInitialized && voice.isListening) {
+            voice.cancel()
+            island.setListening(false)
+        }
         root?.alpha = 1f
         setWindowTyping(false)
         island.collapse()
@@ -578,7 +594,69 @@ class IslandService : Service(), IslandView.Listener {
             return
         }
         noteActivity()
-        buzz() // listening (STT) arrives in phase 2; for now Mouou reacts with a squash and a tick
+        buzz()
+        if (busy || voice.isListening) return
+        if (!windowIsIdle || island.isExpandedOrOpening) {
+            startListening()
+        } else {
+            listenWhenOpen = true
+            onPillTap() // open the card first; listening starts when it has dropped
+        }
+    }
+
+    /** Hold longer than 1.2 s and release = push-to-talk end (spec §6). */
+    override fun onLongPressEnd(heldMs: Long) {
+        if (voice.isListening && heldMs >= ListenRules.PUSH_TO_TALK_MS) voice.stop()
+    }
+
+    private fun startListening() {
+        if (root == null || busy || voice.isListening) return
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            showHint("🎤 لازمني إذن الميكروفون: حلّ التطبيق وأعطيه في «الأذونات».")
+            return
+        }
+        ensureMicForeground()
+        handler.removeCallbacks(idleCollapse)
+        input.text.clear()
+        reply.setTextColor(0xFF8E8E96.toInt())
+        reply.text = "🎤 نسمع فيك…"
+        island.setListening(true)
+        voice.start()
+    }
+
+    private inner class VoiceCallbacks : VoiceListener.Callbacks {
+        override fun onPartial(text: String) {
+            input.setText(text) // live text while Ayman speaks
+            input.setSelection(input.text.length)
+        }
+
+        override fun onLevel(level: Float) = island.setVoiceLevel(level)
+
+        override fun onFinal(text: String) {
+            island.setListening(false)
+            input.setText(text)
+            onSend() // exactly like a typed message
+        }
+
+        override fun onError(message: String) {
+            island.setListening(false)
+            island.setExpression(Expression.CONFUSED)
+            val granted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            // Permission granted but Android 14+ refused the mic in the background: the fix is opening the app once.
+            if (granted && !micForeground && message == ListenRules.darija(android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS)) {
+                showHint("🎤 حلّ تطبيق Mouou مرّة (الإعدادات) باش يولّي يسمعك وهو في الخلفية، وعاود.")
+            } else {
+                showHint(message)
+            }
+        }
+    }
+
+    private fun showHint(message: String) {
+        reply.setTextColor(0xFFFF9F1C.toInt())
+        reply.text = message
+        reply.scrollTo(0, 0)
+        island.glanceAtReply()
+        restartIdleTimer()
     }
 
     private fun redock() {
@@ -834,11 +912,33 @@ class IslandService : Service(), IslandView.Listener {
             .addAction(Notification.Action.Builder(null, "ورّي / خبّي", toggle).build())
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        lastNotification = notification
+        ensureMicForeground()
+    }
+
+    private var lastNotification: Notification? = null
+    private var micForeground = false
+
+    /**
+     * Foreground types: specialUse, plus microphone when the mic permission is granted. Android 14+ only
+     * allows adding the microphone type while the app is "eligible" (e.g. its settings screen is open), so a
+     * refusal is not an error: it is retried the next time the settings open (spec §17 «حلّ التطبيق مرّة»).
+     */
+    fun ensureMicForeground() {
+        val n = lastNotification ?: return
+        val micGranted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (Build.VERSION.SDK_INT < 34) {
+            startForeground(NOTIFICATION_ID, n)
+            return
         }
+        if (micGranted && !micForeground) {
+            val ok = runCatching {
+                startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            }.onFailure { DebugLog.add("mic FGS refused: ${it.javaClass.simpleName}") }.isSuccess
+            micForeground = ok
+            if (ok) return
+        }
+        if (!micForeground) startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
     }
 
     companion object {
@@ -849,6 +949,8 @@ class IslandService : Service(), IslandView.Listener {
         private const val SCREEN_HIDE_MS = 140L
         private const val CAPTURE_TIMEOUT_MS = 3_000L
         private const val SLEEP_AFTER_MS = 120_000L
+        private const val LISTEN_AFTER_OPEN_MS = 380L
+        private const val ACTION_MIC_READY = "com.glteam.teambubbles.MIC_READY"
         private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
         private const val ACTION_TOGGLE = "com.glteam.teambubbles.TOGGLE"
         private const val ACTION_SETTINGS_CHANGED = "com.glteam.teambubbles.SETTINGS_CHANGED"
@@ -871,6 +973,11 @@ class IslandService : Service(), IslandView.Listener {
         fun stop(context: Context) {
             IslandPrefs(context).islandOn = false
             context.stopService(Intent(context, IslandService::class.java))
+        }
+
+        /** The settings screen is visible: the right moment to add the microphone foreground type (Android 14+). */
+        fun micReady(context: Context) {
+            if (running) context.startService(Intent(context, IslandService::class.java).setAction(ACTION_MIC_READY))
         }
 
         /** The side setting changed: dock again on the new side. */
