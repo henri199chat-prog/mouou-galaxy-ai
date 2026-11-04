@@ -49,11 +49,14 @@ object Gemini {
 
     private fun version(name: String) = VERSION.find(name)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
 
-    /** Thinking per model family (spec §10.2): Gemini 3 flash "medium", lite "low", 2.5 budget 1024. */
+    /**
+     * Thinking per model family. The spec said "medium" for Gemini 3 flash, but answers are under 30 words and
+     * medium thinking + search made replies too slow on the phone (2.3.3), so every model now thinks "low"
+     * (supported by 3.x and 2.5 per the docs, Nov 2026). A model that refuses it gets a retry without thinking.
+     */
     fun thinkingConfig(model: String): JSONObject? = when {
-        model.startsWith("gemini-2.5") -> JSONObject().put("thinkingBudget", if (model.contains("lite")) 512 else 1024)
-        model.contains("lite") -> JSONObject().put("thinkingLevel", "low")
-        model.startsWith("gemini-3") || model.contains("latest") -> JSONObject().put("thinkingLevel", "medium")
+        model.startsWith("gemini-2.5") -> JSONObject().put("thinkingBudget", 512)
+        model.startsWith("gemini-3") || model.contains("latest") || model.startsWith("gemini-4") -> JSONObject().put("thinkingLevel", "low")
         else -> null
     }
 

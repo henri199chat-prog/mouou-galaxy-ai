@@ -36,9 +36,9 @@ class GeminiPartsTest {
     @Test fun requestBodyHasSchemaOnlyWithoutSearch() {
         val withSearch = Gemini.requestBody("s", emptyList(), "q", "gemini-3.8-flash", useSearch = true, useSchema = true, useThinking = true)
         assertTrue(withSearch.contains("google_search") && !withSearch.contains("responseSchema"))
-        assertTrue(withSearch.contains("\"thinkingLevel\":\"medium\""))
+        assertTrue(withSearch.contains("\"thinkingLevel\":\"low\""))
         val noSearch = Gemini.requestBody("s", emptyList(), "q", "gemini-2.5-flash", useSearch = false, useSchema = true, useThinking = true)
-        assertTrue(noSearch.contains("responseSchema") && noSearch.contains("\"thinkingBudget\":1024"))
+        assertTrue(noSearch.contains("responseSchema") && noSearch.contains("\"thinkingBudget\":512"))
         assertTrue(noSearch.contains("\"maxOutputTokens\":4096"))
     }
 

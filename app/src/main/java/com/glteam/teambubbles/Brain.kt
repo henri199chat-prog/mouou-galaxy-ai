@@ -56,7 +56,8 @@ class Brain(
 ) {
     sealed class Result {
         data class Answer(val reply: BrainReply, val model: String) : Result()
-        data class Failure(val error: BrainError) : Result()
+        /** [detail] = what each model answered, e.g. "gemini-3.8-flash 429 · gemini-3.6-flash timeout" (for the card and the log). */
+        data class Failure(val error: BrainError, val detail: String = "") : Result()
     }
 
     fun ask(
@@ -72,6 +73,8 @@ class Brain(
         if (key.isEmpty()) return Result.Failure(BrainError.NO_KEY)
         val start = clock()
         val errors = mutableListOf<BrainError>()
+        val trace = mutableListOf<String>()
+        fun fail(e: BrainError) = Result.Failure(e, trace.joinToString(" · ")).also { log("failed: ${it.error} — ${it.detail}") }
 
         for (model in models.ifEmpty { Gemini.STATIC_MODELS }) {
             var thinking = true
@@ -82,7 +85,8 @@ class Brain(
             while (tries++ < 4) {
                 if (clock() - start > CHAIN_MS) {
                     log("chain budget spent")
-                    return Result.Failure(if (errors.all { it == BrainError.QUOTA } && errors.isNotEmpty()) BrainError.QUOTA else BrainError.TIMEOUT)
+                    trace += "وقت كامل ${CHAIN_MS / 1000}s"
+                    return fail(if (errors.all { it == BrainError.QUOTA } && errors.isNotEmpty()) BrainError.QUOTA else BrainError.TIMEOUT)
                 }
                 val url = "${Gemini.BASE}/models/$model:generateContent"
                 val body = Gemini.requestBody(systemPrompt, history, userText, model, search, schema, thinking, imageJpegBase64 = imageJpegBase64)
@@ -90,40 +94,44 @@ class Brain(
                     transport.post(url, key, body, http1)
                 } catch (e: UnknownHostException) {
                     log("$model offline: ${e.message}")
-                    return Result.Failure(BrainError.OFFLINE)
+                    trace += "$model offline"
+                    return fail(BrainError.OFFLINE)
                 } catch (e: InterruptedIOException) {
                     log("$model timeout (http1=$http1)")
-                    if (!http1) { http1 = true; continue }
+                    if (!http1 && clock() - start < CHAIN_MS / 2) { http1 = true; continue }
+                    trace += "$model timeout"
                     errors += BrainError.TIMEOUT
                     break
                 } catch (e: IOException) {
                     log("$model io: ${e.message}")
+                    trace += "$model io"
                     errors += BrainError.OFFLINE
                     break
                 }
                 val code = response.code
                 val text = response.body
-                log("$model → HTTP $code")
+                log("$model → HTTP $code${if (code != 200) " " + text.take(160).replace('\n', ' ') else ""}")
                 when {
                     code == 200 -> {
-                        if (ReplyParser.isBlocked(text)) return Result.Failure(BrainError.BLOCKED)
+                        if (ReplyParser.isBlocked(text)) { trace += "$model blocked"; return fail(BrainError.BLOCKED) }
                         val reply = ReplyParser.parse(ReplyParser.text(text))
-                        if (reply.reply.isBlank()) { errors += BrainError.EMPTY; break }
+                        if (reply.reply.isBlank()) { trace += "$model empty"; errors += BrainError.EMPTY; break }
                         return Result.Answer(reply, model)
                     }
-                    code == 401 || text.contains("API_KEY_INVALID") || text.contains("API key not valid") ->
-                        return Result.Failure(BrainError.BAD_KEY)
+                    code == 401 || text.contains("API_KEY_INVALID") || text.contains("API key not valid") -> {
+                        trace += "$model $code"
+                        return fail(BrainError.BAD_KEY)
+                    }
                     code == 400 && thinking && text.contains("thinking", ignoreCase = true) -> { thinking = false; continue }
                     code == 400 && search && (text.contains("search", true) || text.contains("tool", true)) -> { search = false; continue }
                     code == 400 && schema && (text.contains("schema", true) || text.contains("mime", true)) -> { schema = false; continue }
-                    code == 429 -> { errors += BrainError.QUOTA; break }
-                    code == 404 || code == 403 -> { errors += BrainError.NO_MODEL; break }
-                    code >= 500 -> { errors += BrainError.SERVER; break }
-                    else -> { errors += BrainError.SERVER; break }
+                    code == 429 -> { trace += "$model 429"; errors += BrainError.QUOTA; break }
+                    code == 404 || code == 403 -> { trace += "$model $code"; errors += BrainError.NO_MODEL; break }
+                    else -> { trace += "$model $code"; errors += BrainError.SERVER; break }
                 }
             }
         }
-        return Result.Failure(summarise(errors))
+        return fail(summarise(errors))
     }
 
     /** Every model failed: say the most useful reason. */
@@ -155,7 +163,9 @@ class Brain(
         val working = mutableListOf<String>()
         val busy = mutableListOf<String>()
         val other = mutableListOf<String>()
-        val pings = listed.map { model ->
+        val pings = mutableListOf<String>()
+        for (model in listed) {
+            if (working.isNotEmpty()) break // one working model is enough: don't spend the free quota on the rest
             val t0 = clock()
             val code = try {
                 transport.post(
@@ -170,9 +180,10 @@ class Brain(
                 404, 403 -> Unit // not available for this key: dropped from the list
                 else -> other += model
             }
-            "$model: ${pingLabel(code)} (${clock() - t0} ms)"
+            pings += "$model: ${pingLabel(code)} (${clock() - t0} ms)"
         }
-        val ordered = (working + busy + other).ifEmpty { listed }
+        val untried = listed.filter { it !in working && it !in busy && it !in other && pings.none { p -> p.startsWith("$it:") } }
+        val ordered = (working + untried + busy + other).ifEmpty { listed }
         val summary = when {
             working.isNotEmpty() -> "المفتاح يخدم ✅ — Mouou يبدا بـ ${working.first()}"
             busy.isNotEmpty() -> "المفتاح صحيح ✅ أما الحصّة المجانية مشغولة توا (429). Mouou يجرّب الموديلات وحدو، ولا عاود الاختبار بعد دقيقة."
@@ -196,7 +207,9 @@ class Brain(
     data class KeyTest(val ok: Boolean, val summary: String, val models: List<String>, val pings: List<String>)
 
     companion object {
-        const val PER_TRY_MS = 12_000L
-        const val CHAIN_MS = 30_000L
+        // Spec said 12 s / 30 s, but a thinking model with Google search can need more than 12 s for one answer
+        // (2.3.3 on the phone: no answer at all). Low thinking + 25 s per try + 60 s for the whole chain.
+        const val PER_TRY_MS = 25_000L
+        const val CHAIN_MS = 60_000L
     }
 }

@@ -52,6 +52,12 @@ class BrainTest {
         assertEquals("يحب الكسكسي", r.reply.remember)
     }
 
+    @Test fun failureSaysWhatEachModelAnswered() {
+        val t = FakeTransport(mapOf("m1" to mutableListOf(GeminiTransport.Response(429, "")), "m2" to mutableListOf(InterruptedIOException(), InterruptedIOException())))
+        val r = ask(t, models = listOf("m1", "m2")) as Brain.Result.Failure
+        assertEquals("m1 429 · m2 timeout", r.detail)
+    }
+
     @Test fun allQuotaGivesTheQuotaMessage() {
         val q = { mutableListOf<Any>(GeminiTransport.Response(429, "quota")) }
         val r = ask(FakeTransport(mapOf("m1" to q(), "m2" to q(), "m3" to q()))) as Brain.Result.Failure
@@ -118,12 +124,12 @@ class BrainTest {
     @Test fun chainStopsAfter30Seconds() {
         var now = 0L
         val t = object : GeminiTransport {
-            override fun post(url: String, apiKey: String, json: String, http1: Boolean): GeminiTransport.Response { now += 11_000; return GeminiTransport.Response(503, "") }
+            override fun post(url: String, apiKey: String, json: String, http1: Boolean): GeminiTransport.Response { now += 22_000; return GeminiTransport.Response(503, "") }
             override fun get(url: String, apiKey: String) = GeminiTransport.Response(200, "{}")
         }
         val r = Brain(t, { now }).ask(key, listOf("a", "b", "c", "d", "e"), "s", emptyList(), "q", false)
         assertTrue(r is Brain.Result.Failure)
-        assertTrue("took $now ms", now <= 44_000)
+        assertTrue("took $now ms", now <= 88_000)
     }
 
     @Test fun keyTestPutsWorkingModelsFirstAndDropsUnavailableOnes() {
@@ -137,7 +143,7 @@ class BrainTest {
         assertEquals("gemini-2.5-flash", r.models.first())
         assertTrue("gemini-3.8-flash" in r.models)
         assertTrue("gemini-2.5-pro" !in r.models)
-        assertEquals(5, r.pings.size) // every listed model is tried, not only two
+        assertEquals(3, r.pings.size) // tries until the first working model, then stops (saves the free quota)
     }
 
     @Test fun keyIsValidEvenWhenEveryModelIsBusy() {

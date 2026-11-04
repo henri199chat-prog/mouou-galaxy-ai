@@ -64,6 +64,16 @@ class IslandView(context: Context) : View(context) {
     private var replyGlanceUntil = 0L
     private var lookTargetX = 0f
     private var thinking = false
+    private val face = FaceAnim()
+    private val eyePath = Path()
+    private val strokeEyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF101014.toInt()
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val sparklePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
+    private val tearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC4F8DFF.toInt() }
     private var scanning = false
     private val scanPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var scanRadius = Float.NaN
@@ -197,6 +207,12 @@ class IslandView(context: Context) : View(context) {
         }
     }
 
+    /** Shows a face (spec §11) with a quick blink-switch; it eases back to idle after [holdMs]. */
+    fun setExpression(e: Expression, holdMs: Long = FaceAnim.HOLD_MS) {
+        face.set(e, SystemClock.uptimeMillis(), holdMs)
+        kick()
+    }
+
     /** Scanning face (spec §11): eyes down, a blue light under him, while he looks at the screen. */
     fun setScanning(on: Boolean) {
         scanning = on
@@ -279,7 +295,7 @@ class IslandView(context: Context) : View(context) {
             return
         }
         val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f || pendingFrame != null
-        if (moving || easingAttention || bounce.active(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
+        if (moving || easingAttention || bounce.active(now) || face.animating(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
 
     private fun drawShape(canvas: Canvas, p: Float, now: Long) {
@@ -383,6 +399,111 @@ class IslandView(context: Context) : View(context) {
         }
     }
 
+    /**
+     * Mouou's eyes for one face (spec §11: eyes only, no mouth, ever). Left eye first, then right.
+     * [open] (blinks and face switches) squashes every shape vertically.
+     */
+    private fun drawEyes(canvas: Canvas, e: Expression, w: Float, h: Float, eyeW: Float, open: Float, lookX: Float, eyeY: Float) {
+        val baseH = h * 0.26f
+        strokeEyePaint.strokeWidth = w * 0.045f
+        for ((i, dx) in EYE_OFFSETS.withIndex()) {
+            val left = i == 0
+            val ex = w * (dx + lookX)
+            when (e) {
+                Expression.HAPPY, Expression.EXCITED -> if (e == Expression.EXCITED) {
+                    oval(canvas, ex, eyeY, eyeW * 1.15f, baseH * 1.1f, open)
+                    canvas.drawCircle(ex + eyeW * 0.18f, eyeY - baseH * 0.22f * open, eyeW * 0.22f, sparklePaint)
+                } else {
+                    arc(canvas, ex, eyeY, eyeW, baseH * 0.5f * open.coerceAtLeast(0.25f), up = true)
+                }
+                Expression.LAUGH -> chevron(canvas, ex, eyeY, eyeW, baseH * 0.38f * open.coerceAtLeast(0.25f), pointRight = left)
+                Expression.LOVE -> heart(canvas, ex, eyeY, eyeW * 1.45f * (0.85f + 0.15f * open))
+                Expression.SURPRISED -> {
+                    oval(canvas, ex, eyeY, eyeW * 1.35f, baseH * 1.25f, open)
+                    canvas.drawCircle(ex + eyeW * 0.2f, eyeY - baseH * 0.3f * open, eyeW * 0.2f, sparklePaint)
+                }
+                Expression.SAD, Expression.CRYING -> {
+                    oval(canvas, ex, eyeY + baseH * 0.08f, eyeW, baseH * 0.85f, open)
+                    lid(canvas, ex, eyeY + baseH * 0.08f, eyeW, baseH * 0.85f, outerDown = true, left = left)
+                    if (e == Expression.CRYING) {
+                        val top = eyeY + baseH * 0.35f
+                        canvas.drawRoundRect(ex - eyeW * 0.3f, top, ex + eyeW * 0.3f, h * 0.48f, eyeW * 0.3f, eyeW * 0.3f, tearPaint)
+                    }
+                }
+                Expression.ANGRY -> {
+                    oval(canvas, ex, eyeY, eyeW, baseH, open)
+                    lid(canvas, ex, eyeY, eyeW, baseH, outerDown = false, left = left)
+                }
+                Expression.WORRIED -> {
+                    oval(canvas, ex, eyeY, eyeW, baseH * 0.9f, open)
+                    // Raised inner brows: a short line above each eye, higher towards the middle.
+                    val inner = if (left) 1f else -1f
+                    canvas.drawLine(ex - inner * eyeW, eyeY - baseH * 0.62f, ex + inner * eyeW, eyeY - baseH * 0.85f, strokeEyePaint)
+                }
+                Expression.CONFUSED -> if (left) {
+                    oval(canvas, ex, eyeY, eyeW, baseH, open)
+                } else {
+                    oval(canvas, ex, eyeY - baseH * 0.12f, eyeW * 0.75f, baseH * 0.6f, open)
+                }
+                Expression.WINK -> if (left) arc(canvas, ex, eyeY, eyeW, baseH * 0.45f, up = true) else oval(canvas, ex, eyeY, eyeW, baseH, open)
+                Expression.SLEEPY -> canvas.drawLine(ex - eyeW * 0.8f, eyeY + baseH * 0.1f, ex + eyeW * 0.8f, eyeY + baseH * 0.1f, strokeEyePaint)
+                Expression.SHY -> arc(canvas, ex, eyeY, eyeW, baseH * 0.35f, up = false)
+                Expression.IDLE -> oval(canvas, ex, eyeY, eyeW, baseH, open)
+            }
+        }
+    }
+
+    private fun oval(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float, open: Float) {
+        val eh = (h * open).coerceAtLeast(w * 0.25f)
+        eye.set(cx - w / 2, cy - eh / 2, cx + w / 2, cy + eh / 2)
+        canvas.drawOval(eye, eyePaint)
+    }
+
+    /** ^ (up) or ‿ (down) closed-eye arc. */
+    private fun arc(canvas: Canvas, cx: Float, cy: Float, w: Float, rise: Float, up: Boolean) {
+        val dir = if (up) -1f else 1f
+        eyePath.reset()
+        eyePath.moveTo(cx - w * 0.9f, cy - dir * rise * 0.3f)
+        eyePath.quadTo(cx, cy + dir * rise * 1.4f, cx + w * 0.9f, cy - dir * rise * 0.3f)
+        canvas.drawPath(eyePath, strokeEyePaint)
+    }
+
+    /** > or < (laughing). */
+    private fun chevron(canvas: Canvas, cx: Float, cy: Float, w: Float, half: Float, pointRight: Boolean) {
+        val tip = if (pointRight) 1f else -1f
+        eyePath.reset()
+        eyePath.moveTo(cx - tip * w * 0.6f, cy - half)
+        eyePath.lineTo(cx + tip * w * 0.6f, cy)
+        eyePath.lineTo(cx - tip * w * 0.6f, cy + half)
+        canvas.drawPath(eyePath, strokeEyePaint)
+    }
+
+    private fun heart(canvas: Canvas, cx: Float, cy: Float, size: Float) {
+        val s = size / 2f
+        eyePath.reset()
+        eyePath.moveTo(cx, cy + s * 0.9f)
+        eyePath.cubicTo(cx - s * 1.3f, cy + s * 0.1f, cx - s * 0.9f, cy - s * 1.0f, cx, cy - s * 0.35f)
+        eyePath.cubicTo(cx + s * 0.9f, cy - s * 1.0f, cx + s * 1.3f, cy + s * 0.1f, cx, cy + s * 0.9f)
+        eyePath.close()
+        canvas.drawPath(eyePath, eyePaint)
+    }
+
+    /** A slanted lid in the body colour over the top of the eye: sad (outer side down) or angry (inner side down). */
+    private fun lid(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float, outerDown: Boolean, left: Boolean) {
+        val outerIsLeft = left // the left eye's outer side is its left
+        val low = cy - h * 0.05f
+        val high = cy - h * 0.55f
+        val leftY = if (outerDown == outerIsLeft) low else high
+        val rightY = if (outerDown == outerIsLeft) high else low
+        eyePath.reset()
+        eyePath.moveTo(cx - w, leftY)
+        eyePath.lineTo(cx + w, rightY)
+        eyePath.lineTo(cx + w, cy - h)
+        eyePath.lineTo(cx - w, cy - h)
+        eyePath.close()
+        canvas.drawPath(eyePath, bodyPaint)
+    }
+
     /** Soft blue light under Mouou while he reads the screen (#5AA8FF → #BFE0FF), pulsing gently. */
     private fun drawScanLight(canvas: Canvas, x: Float, y: Float, bodyW: Float, now: Long) {
         val r = bodyW * 0.9f
@@ -437,13 +558,9 @@ class IslandView(context: Context) : View(context) {
         val lookX = glance.x + (lookTargetX - glance.x) * attention
         val lookY = glance.y + (lookTargetY - glance.y) * attention
         val eyeW = w * 0.10f
-        val eyeH = (h * 0.26f * life.eyeOpenness(now) * eyeFactor).coerceAtLeast(eyeW * 0.25f)
+        val open = life.eyeOpenness(now) * eyeFactor * face.update(now)
         val eyeY = body.top + h * (0.56f + lookY)
-        for (dx in EYE_OFFSETS) {
-            val ex = w * (dx + lookX)
-            eye.set(ex - eyeW / 2, eyeY - eyeH / 2, ex + eyeW / 2, eyeY + eyeH / 2)
-            canvas.drawOval(eye, eyePaint)
-        }
+        drawEyes(canvas, face.current, w, h, eyeW, open, lookX, eyeY)
         canvas.restore()
     }
 

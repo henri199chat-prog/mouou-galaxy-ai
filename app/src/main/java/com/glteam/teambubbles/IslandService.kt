@@ -617,6 +617,7 @@ class IslandService : Service(), IslandView.Listener {
             return
         }
         input.text.clear()
+        Expressions.fromWords(text)?.let { island.setExpression(it) } // instant reaction to his words (§10.7)
         busy = true
         screenOffHint = false
         handler.removeCallbacks(idleCollapse)
@@ -702,11 +703,15 @@ class IslandService : Service(), IslandView.Listener {
                 if (result.reply.remember.isNotBlank() && facts.remember(result.reply.remember)) brainSettings.saveFacts(facts)
                 reply.setTextColor(0xFFFFFFFF.toInt())
                 reply.text = result.reply.reply
-                if (result.reply.emotion in HAPPY_EMOTIONS) island.hop()
+                val face = Expressions.fromEmotion(result.reply.emotion.ifBlank { result.reply.mood })
+                island.setExpression(face) // the brain's emotion replaces the word reaction and stays while answering
+                if (Expressions.isHappy(face)) island.hop()
             }
             is Brain.Result.Failure -> {
+                island.setExpression(Expression.WORRIED) // error face
                 reply.setTextColor(0xFFFF9F1C.toInt())
-                reply.text = result.error.darija
+                // The exact reason under the message, so a screenshot is enough to diagnose (no key in it).
+                reply.text = if (result.detail.isBlank()) result.error.darija else "${result.error.darija}\n(${result.detail})"
             }
         }
         reply.scrollTo(0, 0)
@@ -823,7 +828,6 @@ class IslandService : Service(), IslandView.Listener {
         private const val HIDE_AFTER_COLLAPSE_MS = 450L
         private const val SCREEN_HIDE_MS = 140L
         private const val CAPTURE_TIMEOUT_MS = 3_000L
-        private val HAPPY_EMOTIONS = setOf("happy", "laugh", "excited", "love", "wink")
         private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
         private const val ACTION_TOGGLE = "com.glteam.teambubbles.TOGGLE"
         private const val ACTION_SETTINGS_CHANGED = "com.glteam.teambubbles.SETTINGS_CHANGED"
