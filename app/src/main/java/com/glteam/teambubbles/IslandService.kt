@@ -65,6 +65,14 @@ class IslandService : Service(), IslandView.Listener {
     private val handler = Handler(Looper.getMainLooper())
     private val idleCollapse = Runnable { if (!busy && CardPin.idleMayCollapse(typing, input.text)) collapseCard() }
     private val autoHide = Runnable { hideIsland() }
+    // Left alone for 2 minutes, Mouou dozes off (sleepy face) until the next touch or message.
+    private var asleep = false
+    private val fallAsleep = Runnable {
+        if (windowIsIdle && !island.isExpandedOrOpening && !typing && !busy) {
+            asleep = true
+            island.setExpression(Expression.SLEEPY, holdMs = Long.MAX_VALUE / 4)
+        }
+    }
     private var inCameraZone = false // hidden, and the window shrank to the camera hole (tap it to show Mouou)
     private val moveToCameraZone = Runnable {
         val cam = cameraCutout() ?: return@Runnable
@@ -276,7 +284,7 @@ class IslandService : Service(), IslandView.Listener {
     /** Dock: beside the camera above the status bar (accessibility host), or just below the status bar. */
     private fun dock(w: Int = pill.width, h: Int = pill.height): Box =
         if (usingAccessibility) {
-            CutoutPlacer.idleWindow(screenWidth(), cameraCutout(), w, h, dp(6f), 0, PillSide.RIGHT, dp(6f))
+            CutoutPlacer.idleWindow(screenWidth(), cameraCutout(), w, h, dp(6f), 0, prefs.side, dp(6f))
         } else {
             IslandGeometry.dockBelowStatusBar(screenWidth(), cameraCutout(), w, h, statusBarHeight(), dp(2f))
         }
@@ -352,10 +360,19 @@ class IslandService : Service(), IslandView.Listener {
     /** Any use of Mouou restarts the auto-hide countdown; it only runs while nobody is using him. */
     private fun noteActivity() {
         handler.removeCallbacks(autoHide)
+        wakeUp()
+        handler.removeCallbacks(fallAsleep)
+        handler.postDelayed(fallAsleep, SLEEP_AFTER_MS)
         val after = prefs.hideAfterMs
         if (HideAfter.mayHide(after, cardOpen = !windowIsIdle || island.isExpandedOrOpening, typing = typing, fingerDown = island.isFingerDown)) {
             handler.postDelayed(autoHide, after)
         }
+    }
+
+    private fun wakeUp() {
+        if (!asleep) return
+        asleep = false
+        island.setExpression(Expression.IDLE)
     }
 
     private fun hideIsland() {
@@ -394,6 +411,8 @@ class IslandService : Service(), IslandView.Listener {
 
     override fun onPillTap() {
         if (island.isExpandedOrOpening) return
+        wakeUp()
+        handler.removeCallbacks(fallAsleep)
         handler.removeCallbacks(autoHide) // in use
         Choreographer.getInstance().removeFrameCallback(settleFrame)
         val card = IslandGeometry.cardFor(pill, screenWidth(), screenHeight(), statusBarHeight(), navBarTop(), density)
@@ -477,6 +496,7 @@ class IslandService : Service(), IslandView.Listener {
     }
 
     override fun onDragStart() {
+        wakeUp()
         handler.removeCallbacks(autoHide)
         Choreographer.getInstance().removeFrameCallback(settleFrame)
     }
@@ -828,6 +848,7 @@ class IslandService : Service(), IslandView.Listener {
         private const val HIDE_AFTER_COLLAPSE_MS = 450L
         private const val SCREEN_HIDE_MS = 140L
         private const val CAPTURE_TIMEOUT_MS = 3_000L
+        private const val SLEEP_AFTER_MS = 120_000L
         private const val ACTION_REDOCK = "com.glteam.teambubbles.REDOCK"
         private const val ACTION_TOGGLE = "com.glteam.teambubbles.TOGGLE"
         private const val ACTION_SETTINGS_CHANGED = "com.glteam.teambubbles.SETTINGS_CHANGED"
@@ -842,8 +863,18 @@ class IslandService : Service(), IslandView.Listener {
         @Volatile var running = false
             private set
 
-        fun start(context: Context) = context.startForegroundService(Intent(context, IslandService::class.java))
-        fun stop(context: Context) = context.stopService(Intent(context, IslandService::class.java))
+        fun start(context: Context) {
+            IslandPrefs(context).islandOn = true
+            context.startForegroundService(Intent(context, IslandService::class.java))
+        }
+
+        fun stop(context: Context) {
+            IslandPrefs(context).islandOn = false
+            context.stopService(Intent(context, IslandService::class.java))
+        }
+
+        /** The side setting changed: dock again on the new side. */
+        fun sideChanged(context: Context) = redock(context)
 
         /** «رجّع للكاميرا»: back to the dock beside the camera. */
         fun redock(context: Context) {

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -47,6 +48,9 @@ class MainActivity : ComponentActivity() {
     private var islandOn by mutableStateOf(false)
     private var accessibilityOn by mutableStateOf(false)
     private var hideAfterMs by mutableStateOf(0L)
+    private var notificationsOk by mutableStateOf(true)
+    private var batteryOk by mutableStateOf(true)
+    private var side by mutableStateOf(PillSide.RIGHT)
     private val prefs by lazy { IslandPrefs(this) }
     private val vault by lazy { KeyVault(this) }
     private val brainSettings by lazy { BrainSettings(this) }
@@ -74,6 +78,21 @@ class MainActivity : ComponentActivity() {
                     hideAfterMs = ms
                     IslandService.settingsChanged(this)
                 },
+                extras = Extras(
+                    notificationsOk = notificationsOk,
+                    batteryOk = batteryOk,
+                    side = side,
+                    version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty(),
+                    onNotifications = {
+                        if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                    },
+                    onBattery = ::askIgnoreBatteryOptimisation,
+                    onSide = {
+                        prefs.side = it
+                        side = it
+                        IslandService.sideChanged(this)
+                    },
+                ),
                 brain = brain,
                 brainActions = BrainActions(
                     onKeyInput = { brain = brain.copy(keyInput = it) },
@@ -103,6 +122,10 @@ class MainActivity : ComponentActivity() {
         islandOn = IslandService.running
         accessibilityOn = ScreenService.instance != null
         hideAfterMs = prefs.hideAfterMs
+        notificationsOk = Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        batteryOk = getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) ?: true
+        side = prefs.side
         brain = brain.copy(
             keySaved = vault.has(),
             useSearch = brainSettings.useSearch,
@@ -143,6 +166,14 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    /** Spec §16 «تجاهل تحسين البطارية»: so Samsung does not stop the island in the background. */
+    @android.annotation.SuppressLint("BatteryLife")
+    private fun askIgnoreBatteryOptimisation() {
+        runCatching {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        }.onFailure { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+    }
+
     private fun openOverlaySettings() {
         startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
     }
@@ -164,6 +195,7 @@ private fun SettingsHome(
     onRedock: () -> Unit,
     hideAfterMs: Long,
     onHideAfter: (Long) -> Unit,
+    extras: Extras,
     brain: BrainUi,
     brainActions: BrainActions,
 ) {
@@ -176,6 +208,9 @@ private fun SettingsHome(
             ) {
                 Text("Mouou Galaxy AI", color = Color.White, fontSize = 26.sp)
                 Text("يسمعك، يشوف شاشتك ويجاوبك", color = Color(0xFF8E8E96), fontSize = 15.sp)
+                Text("🔐 الأذونات", color = Color.White, fontSize = 18.sp)
+                PermissionRow("الإشعارات", extras.notificationsOk, extras.onNotifications)
+                PermissionRow("تجاهل تحسين البطارية (باش سامسونج ما يسكّروش)", extras.batteryOk, extras.onBattery)
                 if (!canOverlay) {
                     Text("⛔ لازم تعطيه إذن «الظهور فوق التطبيقات»", color = Color(0xFFFF5C6C), fontSize = 14.sp)
                     Button(onClick = onOverlay) { Text("منح الإذن") }
@@ -219,7 +254,17 @@ private fun SettingsHome(
                         "(إذا «الشاشة» مشعّلة) ولا ورّي / خبّي في الإشعار. «Mouu» بالصوت تجي في المرحلة الجاية.",
                     color = Color(0xFF8E8E96), fontSize = 12.sp,
                 )
+                Text("🏝 الجزيرة", color = Color.White, fontSize = 18.sp)
+                Text("الجزيرة حذا الكاميرا من جيهة:", color = Color.White, fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for ((s, label) in listOf(PillSide.RIGHT to "اليمين", PillSide.LEFT to "اليسار")) {
+                        if (s == extras.side) Button(onClick = { extras.onSide(s) }) { Text(label) }
+                        else OutlinedButton(onClick = { extras.onSide(s) }) { Text(label) }
+                    }
+                }
                 BrainSection(brain, brainActions)
+                Text("⚙️ متقدّم", color = Color.White, fontSize = 18.sp)
+                Text("النسخة: ${extras.version}", color = Color(0xFF8E8E96), fontSize = 13.sp)
             }
         }
     }
@@ -292,4 +337,23 @@ private fun BrainSection(ui: BrainUi, a: BrainActions) {
     }
     OutlinedButton(onClick = a.onToggleLog) { Text(if (ui.showLog) "سكّر السجلّ" else "سجلّ الأخطاء") }
     if (ui.showLog) Text(ui.log.ifEmpty { "فارغ" }, color = grey, fontSize = 11.sp)
+}
+
+/** Permissions, island side and app info shown in settings (spec §16). */
+class Extras(
+    val notificationsOk: Boolean,
+    val batteryOk: Boolean,
+    val side: PillSide,
+    val version: String,
+    val onNotifications: () -> Unit,
+    val onBattery: () -> Unit,
+    val onSide: (PillSide) -> Unit,
+)
+
+@Composable
+private fun PermissionRow(label: String, ok: Boolean, onFix: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(if (ok) "✅ $label" else "⛔ $label", color = if (ok) Color(0xFF39FF88) else Color(0xFFFF9F1C), fontSize = 14.sp)
+        if (!ok) OutlinedButton(onClick = onFix) { Text("منح") }
+    }
 }
