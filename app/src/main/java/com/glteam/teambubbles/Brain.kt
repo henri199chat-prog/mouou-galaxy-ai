@@ -118,8 +118,11 @@ class Brain(
                         if (reply.reply.isBlank()) { trace += "$model empty"; errors += BrainError.EMPTY; break }
                         return Result.Answer(reply, model)
                     }
-                    code == 401 || text.contains("API_KEY_INVALID") || text.contains("API key not valid") -> {
-                        trace += "$model $code"
+                    code == 401 || text.contains("API_KEY_INVALID") || text.contains("API key not valid") ||
+                        text.contains("API key expired") -> {
+                        // Google's own words (e.g. "API key expired") + which key the app really sent, safely
+                        // (first 4 chars + length), so a screenshot tells a stale saved key from a refused new one.
+                        trace += "$model $code: ${googleMessage(text)} — ${KeySanitizer.describe(key)}"
                         return fail(BrainError.BAD_KEY)
                     }
                     code == 400 && thinking && text.contains("thinking", ignoreCase = true) -> { thinking = false; continue }
@@ -133,6 +136,11 @@ class Brain(
         }
         return fail(summarise(errors))
     }
+
+    /** The "message" of a Google error body, shortened; never contains the key. */
+    private fun googleMessage(body: String): String = runCatching {
+        org.json.JSONObject(body).optJSONObject("error")?.optString("message").orEmpty()
+    }.getOrDefault("").ifBlank { body.take(80) }.take(90)
 
     /** Every model failed: say the most useful reason. */
     private fun summarise(errors: List<BrainError>): BrainError = when {

@@ -70,6 +70,15 @@ class BrainTest {
         assertEquals(listOf("m1"), t.calls)
     }
 
+    @Test fun expiredKeyShowsGooglesWordsAndWhichKeyWasSent() {
+        val body = "{\"error\":{\"code\":400,\"message\":\"API key expired. Please renew the API key.\",\"status\":\"INVALID_ARGUMENT\"}}"
+        val r = ask(FakeTransport(mapOf("m1" to mutableListOf(GeminiTransport.Response(400, body))))) as Brain.Result.Failure
+        assertEquals(BrainError.BAD_KEY, r.error)
+        assertTrue(r.detail.contains("API key expired"))
+        assertTrue(r.detail.contains("«AIza…»") && r.detail.contains("39"))
+        assertFalse(r.detail.contains(key)) // never the key itself
+    }
+
     @Test fun thinkingErrorRetriesSameModelWithoutThinking() {
         val t = FakeTransport(mapOf("m1" to mutableListOf(GeminiTransport.Response(400, "thinking is not supported"), ok("تمام"))))
         val r = ask(t) as Brain.Result.Answer
