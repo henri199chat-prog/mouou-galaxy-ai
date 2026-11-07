@@ -14,6 +14,7 @@ class MascotBounce {
     private var landAt = Long.MIN_VALUE
     private var hopAt = Long.MIN_VALUE
     private var shakeAt = Long.MIN_VALUE
+    private var sighAt = Long.MIN_VALUE
 
     /** Soft landing squash (card opened, hop finished). */
     fun land(nowMs: Long) { landAt = nowMs }
@@ -23,6 +24,15 @@ class MascotBounce {
 
     /** Playful shake (5 quick taps). */
     fun shake(nowMs: Long) { shakeAt = nowMs }
+
+    /** 2.6.1: a slow sad deflate when he could not answer (sinks a little, then fills up again). */
+    fun sigh(nowMs: Long) { sighAt = nowMs }
+
+    private fun sighCurve(nowMs: Long): Float {
+        val t = nowMs - sighAt
+        if (sighAt == Long.MIN_VALUE || t !in 0 until SIGH_MS) return 0f
+        return sin(PI * t / SIGH_MS).toFloat().let { it * it } // eases in and out, exactly 0 at both ends
+    }
 
     /** Vertical scale multiplier; the horizontal one is 2 − this, so the volume looks constant. */
     fun squash(nowMs: Long): Float {
@@ -37,14 +47,16 @@ class MascotBounce {
                 th in HOP_CROUCH_MS + HOP_AIR_MS until HOP_TOTAL_MS -> s -= landCurve(th - HOP_CROUCH_MS - HOP_AIR_MS)
             }
         }
+        s -= SIGH_DEPTH * sighCurve(nowMs)
         return s
     }
 
     /** Upward offset as a fraction of body height (negative = up). */
     fun offsetY(nowMs: Long): Float {
+        val sink = SIGH_DROP * sighCurve(nowMs)
         val t = nowMs - hopAt - HOP_CROUCH_MS
-        if (hopAt == Long.MIN_VALUE || t !in 0 until HOP_AIR_MS) return 0f
-        return -HOP_HEIGHT * sin(PI * t / HOP_AIR_MS).toFloat()
+        if (hopAt == Long.MIN_VALUE || t !in 0 until HOP_AIR_MS) return sink
+        return sink - HOP_HEIGHT * sin(PI * t / HOP_AIR_MS).toFloat()
     }
 
     /** Sideways shake as a fraction of body width. */
@@ -57,7 +69,8 @@ class MascotBounce {
 
     /** True while any reaction is still playing (the view then draws every vsync). */
     fun active(nowMs: Long): Boolean =
-        (nowMs - landAt) in 0 until LAND_MS || (nowMs - hopAt) in 0 until HOP_TOTAL_MS || (nowMs - shakeAt) in 0 until SHAKE_MS
+        (nowMs - landAt) in 0 until LAND_MS || (nowMs - hopAt) in 0 until HOP_TOTAL_MS || (nowMs - shakeAt) in 0 until SHAKE_MS ||
+            (nowMs - sighAt) in 0 until SIGH_MS
 
     private fun landCurve(t: Long): Float {
         val sec = t / 1000.0
@@ -73,6 +86,9 @@ class MascotBounce {
         const val HOP_HEIGHT = 0.35f
         const val SHAKE_MS = 750L
         const val SHAKE_AMPLITUDE = 0.08f
+        const val SIGH_MS = 900L
+        const val SIGH_DEPTH = 0.07f
+        const val SIGH_DROP = 0.05f
     }
 }
 

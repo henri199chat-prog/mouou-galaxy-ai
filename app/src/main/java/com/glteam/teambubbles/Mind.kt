@@ -91,7 +91,7 @@ class Mind(private val claude: ClaudeBrain, private val gemini: Brain, private v
         return when (g) {
             is Brain.Result.Answer -> Outcome(g, byClaude = false, note = note)
             is Brain.Result.Failure -> Outcome(
-                Brain.Result.Failure(if (!hasClaude && !hasGemini) BrainError.NO_KEY else g.error, listOf(trace, g.detail).filter { it.isNotBlank() }.joinToString(" · ")),
+                Brain.Result.Failure(if (!hasClaude && !hasGemini) BrainError.NO_KEY else g.error, listOf(trace, g.detail).filter { it.isNotBlank() }.joinToString(" · "), g.hint),
                 byClaude = false,
                 note = note,
             )

@@ -227,3 +227,88 @@ enum class BrainError(val darija: String) {
     CLAUDE_BUSY("Claude مشغول برشا توا، عاود بعد شوية"),
     CLAUDE_REFUSED("Claude ما حبّش يجاوب على هذا، جرّب بطريقة أخرى"),
 }
+
+/**
+ * What a Gemini 429 says (2.6.1): which free-tier limit was hit (per minute / per day / tokens / Google search),
+ * the limit and how long to wait. Read from the error's QuotaFailure + RetryInfo details, else from its message.
+ * Free daily limits come back at midnight Pacific time (Google), shown to Ayman in Tunis time.
+ */
+data class QuotaInfo(
+    val ids: List<String> = emptyList(),
+    val limit: String? = null,
+    val retrySec: Int? = null,
+) {
+    private val all get() = ids.joinToString(" ").lowercase()
+    val perDay get() = all.contains("perday") || all.contains("per_day") || all.contains("daily")
+    val perMinute get() = !perDay && (all.contains("perminute") || all.contains("per_minute"))
+    val search get() = all.contains("search") || all.contains("grounding")
+    val tokens get() = all.contains("token")
+
+    /** For the card's detail line, e.g. " يومي 20" / " دقيقة · 41s" / " بحث". */
+    fun short(): String = buildString {
+        when {
+            search -> append(" بحث")
+            perDay -> append(" يومي")
+            tokens -> append(" كلمات/دقيقة")
+            perMinute -> append(" دقيقة")
+        }
+        limit?.let { append(' ').append(it) }
+        retrySec?.let { append(" · ").append(it).append('s') }
+    }
+
+    companion object {
+        private val METRIC = Regex("Quota exceeded for metric: ([^,\\s]+)(?:, limit: (\\d+))?", RegexOption.IGNORE_CASE)
+        private val RETRY_IN = Regex("retry in ([0-9.]+)s", RegexOption.IGNORE_CASE)
+        private val SECONDS = Regex("^([0-9.]+)s$")
+
+        fun parse(body: String): QuotaInfo {
+            val ids = mutableListOf<String>()
+            var limit: String? = null
+            var retry: Int? = null
+            runCatching {
+                val err = JSONObject(body).optJSONObject("error") ?: JSONObject()
+                val details = err.optJSONArray("details") ?: JSONArray()
+                for (i in 0 until details.length()) {
+                    val d = details.optJSONObject(i) ?: continue
+                    val violations = d.optJSONArray("violations")
+                    if (violations != null) for (j in 0 until violations.length()) {
+                        val v = violations.optJSONObject(j) ?: continue
+                        v.optString("quotaId").takeIf { it.isNotBlank() }?.let { ids += it }
+                        v.optString("quotaMetric").takeIf { it.isNotBlank() }?.let { ids += it }
+                        v.optString("quotaValue").takeIf { it.isNotBlank() }?.let { limit = it }
+                    }
+                    d.optString("retryDelay").takeIf { it.isNotBlank() }?.let { r ->
+                        SECONDS.find(r.trim())?.groupValues?.get(1)?.toDoubleOrNull()?.let { retry = kotlin.math.ceil(it).toInt() }
+                    }
+                }
+                val msg = err.optString("message")
+                METRIC.findAll(msg).forEach { m ->
+                    ids += m.groupValues[1]
+                    if (limit == null) m.groupValues.getOrNull(2)?.takeIf { it.isNotBlank() }?.let { limit = it }
+                }
+                if (retry == null) RETRY_IN.find(msg)?.groupValues?.get(1)?.toDoubleOrNull()?.let { retry = kotlin.math.ceil(it).toInt() }
+            }
+            return QuotaInfo(ids.distinct(), limit, retry)
+        }
+
+        /**
+         * One Darija line for Ayman: every model refused for the DAY → when it comes back (Tunis time);
+         * otherwise the longest per-minute wait. Blank when Google said nothing useful.
+         */
+        fun hint(all: List<QuotaInfo>, nowMs: Long): String {
+            if (all.isEmpty()) return ""
+            if (all.all { it.perDay }) return "الحصّة المجانية متاع النهار كملت لكل الموديلات. ترجع على ${dailyResetTunis(nowMs)} بتوقيت تونس، ولا اعمل مفتاح في مشروع (project) جديد."
+            if (all.any { it.limit == "0" }) return "Google يقول الحصّة المجانية هنا صفر (limit 0) لبعض الموديلات: اعمل المفتاح في مشروع جديد من aistudio.google.com."
+            val wait = all.mapNotNull { it.retrySec }.maxOrNull() ?: return ""
+            return "استنى $wait ثانية وعاود."
+        }
+
+        /** Next midnight in Pacific time, as HH:mm in Tunis (09:00 in winter, 08:00 or 09:00 around clock changes). */
+        fun dailyResetTunis(nowMs: Long): String {
+            val pacific = java.time.ZoneId.of("America/Los_Angeles")
+            val now = java.time.Instant.ofEpochMilli(nowMs).atZone(pacific)
+            val reset = now.toLocalDate().plusDays(1).atStartOfDay(pacific)
+            return reset.withZoneSameInstant(java.time.ZoneId.of("Africa/Tunis")).toLocalTime().toString().take(5)
+        }
+    }
+}

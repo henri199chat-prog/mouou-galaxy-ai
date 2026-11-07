@@ -177,6 +177,12 @@ class IslandView(context: Context) : View(context) {
     }
 
     /** Happy hop (a message was sent). */
+    /** 2.6.1: could not answer — a small sad sigh (sinks and deflates a little, then back). */
+    fun sigh() {
+        bounce.sigh(SystemClock.uptimeMillis())
+        kick()
+    }
+
     fun hop() {
         bounce.hop(SystemClock.uptimeMillis())
         kick()
@@ -329,7 +335,7 @@ class IslandView(context: Context) : View(context) {
         }
         val easingAttention = kotlin.math.abs(goal - attention) > 0.01f || stretch > 0.002f || pendingFrame != null ||
             listening || listenTilt > 0.01f
-        if (moving || easingAttention || bounce.active(now) || face.animating(now)) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
+        if (moving || easingAttention || bounce.active(now) || face.animating(now) || GlowBloom.amount(now - bloomAt) > 0f) postInvalidateOnAnimation() else postInvalidateDelayed(IDLE_FRAME_MS)
     }
 
     private fun drawShape(canvas: Canvas, p: Float, now: Long) {

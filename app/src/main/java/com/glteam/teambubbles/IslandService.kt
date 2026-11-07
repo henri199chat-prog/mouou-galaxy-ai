@@ -815,9 +815,11 @@ class IslandService : Service(), IslandView.Listener {
             }
             is Brain.Result.Failure -> {
                 island.setExpression(Expression.WORRIED) // error face
+                island.sigh() // 2.6.1: a small sad deflate, then back
                 reply.setTextColor(0xFFFF9F1C.toInt())
-                // The exact reason under the message, so a screenshot is enough to diagnose (no key in it).
-                reply.text = if (result.detail.isBlank()) result.error.darija else "${result.error.darija}\n(${result.detail})"
+                // The reason, how long to wait (2.6.1), then the exact detail: a screenshot is enough (no key in it).
+                reply.text = listOf(result.error.darija, result.hint, if (result.detail.isBlank()) "" else "(${result.detail})")
+                    .filter { it.isNotBlank() }.joinToString("\n")
             }
         }
         reply.scrollTo(0, 0)

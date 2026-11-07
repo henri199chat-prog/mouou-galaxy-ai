@@ -21,7 +21,12 @@ interface GeminiTransport {
 }
 
 class OkHttpTransport : GeminiTransport {
-    private val client = OkHttpClient.Builder()
+    // 2.6.1: OkHttp's DEFAULT read timeout is 10 s, so "25 s per try" was really 10 s: a model still thinking was
+    // cut off (Ayman's key test: «ما وصلش (10003 ms)»). Every timeout now follows the per-try budget.
+    internal val client = OkHttpClient.Builder()
+        .connectTimeout(15_000, TimeUnit.MILLISECONDS)
+        .readTimeout(Brain.PER_TRY_MS, TimeUnit.MILLISECONDS)
+        .writeTimeout(Brain.PER_TRY_MS, TimeUnit.MILLISECONDS)
         .callTimeout(Brain.PER_TRY_MS, TimeUnit.MILLISECONDS)
         .build()
     // HTTP/2 can stall on some networks: one retry over HTTP/1.1 (spec §19 bug 8).
@@ -57,7 +62,7 @@ class Brain(
     sealed class Result {
         data class Answer(val reply: BrainReply, val model: String) : Result()
         /** [detail] = what each model answered, e.g. "gemini-3.8-flash 429 · gemini-3.6-flash timeout" (for the card and the log). */
-        data class Failure(val error: BrainError, val detail: String = "") : Result()
+        data class Failure(val error: BrainError, val detail: String = "", val hint: String = "") : Result()
     }
 
     fun ask(
@@ -74,7 +79,9 @@ class Brain(
         val start = clock()
         val errors = mutableListOf<BrainError>()
         val trace = mutableListOf<String>()
-        fun fail(e: BrainError) = Result.Failure(e, trace.joinToString(" · ")).also { log("failed: ${it.error} — ${it.detail}") }
+        val quotas = mutableListOf<QuotaInfo>()
+        fun fail(e: BrainError) = Result.Failure(e, trace.joinToString(" · "), if (e == BrainError.QUOTA) QuotaInfo.hint(quotas, clock()) else "")
+            .also { log("failed: ${it.error} — ${it.detail}") }
 
         for (model in models.ifEmpty { Gemini.STATIC_MODELS }) {
             var thinking = true
@@ -128,7 +135,16 @@ class Brain(
                     code == 400 && thinking && text.contains("thinking", ignoreCase = true) -> { thinking = false; continue }
                     code == 400 && search && (text.contains("search", true) || text.contains("tool", true)) -> { search = false; continue }
                     code == 400 && schema && (text.contains("schema", true) || text.contains("mime", true)) -> { schema = false; continue }
-                    code == 429 -> { trace += "$model 429"; errors += BrainError.QUOTA; break }
+                    code == 429 -> {
+                        val q = QuotaInfo.parse(text)
+                        log("$model 429 quota: ${q.ids.joinToString().ifBlank { "?" }} limit=${q.limit ?: "?"} retry=${q.retrySec ?: "?"}s")
+                        // Only the Google-search quota is spent: the same model answers without search (2.6.1).
+                        if (q.search && search) { trace += "$model 429 بحث"; search = false; continue }
+                        quotas += q
+                        trace += "$model 429${q.short()}"
+                        errors += BrainError.QUOTA
+                        break
+                    }
                     code == 404 || code == 403 -> { trace += "$model $code"; errors += BrainError.NO_MODEL; break }
                     else -> { trace += "$model $code"; errors += BrainError.SERVER; break }
                 }
@@ -170,17 +186,20 @@ class Brain(
         // (free keys often get 404 on pro models and 429 on some flash models — Ayman's 2.3.2 test).
         val working = mutableListOf<String>()
         val busy = mutableListOf<String>()
+        val lastQuotas = mutableListOf<QuotaInfo>()
         val other = mutableListOf<String>()
         val pings = mutableListOf<String>()
         for (model in listed) {
             if (working.isNotEmpty()) break // one working model is enough: don't spend the free quota on the rest
             val t0 = clock()
             val code = try {
-                transport.post(
+                val r = transport.post(
                     "${Gemini.BASE}/models/$model:generateContent", key,
                     Gemini.requestBody("Reply with one word.", emptyList(), "hi", model, useSearch = false, useSchema = false, useThinking = false, maxOutputTokens = 5),
                     http1 = false,
-                ).code
+                )
+                if (r.code == 429) lastQuotas += QuotaInfo.parse(r.body)
+                r.code
             } catch (e: IOException) { -1 }
             when (code) {
                 200 -> working += model
@@ -197,12 +216,12 @@ class Brain(
             busy.isNotEmpty() -> "المفتاح صحيح ✅ أما الحصّة المجانية مشغولة توا (429). Mouou يجرّب الموديلات وحدو، ولا عاود الاختبار بعد دقيقة."
             else -> "المفتاح صحيح ✅ أما حتى موديل ما جاوب توا — شوف سجلّ الأخطاء"
         }
-        return KeyTest(true, summary, ordered, pings)
+        return KeyTest(true, summary, ordered, pings + listOfNotNull(QuotaInfo.hint(lastQuotas, clock()).takeIf { busy.isNotEmpty() && it.isNotBlank() }))
     }
 
     private fun pingLabel(code: Int) = when (code) {
         200 -> "يخدم ✅"
-        429 -> "مشغول (429)"
+        429 -> "الحصّة كملت (429)"
         404, 403 -> "موش متوفّر ($code)"
         -1 -> "ما وصلش"
         else -> "HTTP $code"
