@@ -75,3 +75,17 @@ class MascotBounce {
         const val SHAKE_AMPLITUDE = 0.08f
     }
 }
+
+/** 2.6.0: the card glow lights up when an answer arrives (an "aha"), then fades back. Pure, tested. */
+object GlowBloom {
+    const val RISE_MS = 140f
+    const val FADE_MS = 220f
+    const val TOTAL_MS = 1100L
+
+    /** 0..1: a soft rise to 1 in 140 ms, then an exponential fade, 0 after 1.1 s (and before a bloom ever happened). */
+    fun amount(sinceMs: Long): Float = when {
+        sinceMs < 0 || sinceMs >= TOTAL_MS -> 0f
+        sinceMs < RISE_MS -> { val t = sinceMs / RISE_MS; t * t * (3 - 2 * t) }
+        else -> kotlin.math.exp(-(sinceMs - RISE_MS) / FADE_MS)
+    }
+}

@@ -30,7 +30,7 @@ object SystemPrompt {
 - إنت تشوف شاشة تليفون أيمن كيف ما يشوفها هو بعينيه: مع كل سؤال تجيك تصويرة الشاشة توا + النصوص المكتوبة عليها. عمرك ما تقول «ما نشوفش الشاشة» ولا «ما نجمش نشوف»؛ كي يسألك «تشوف الشاشة؟» قلّو إيه وقلّو شنوّة تشوف.
 - كان لقيت في السؤال «$SCREEN_OFF_TAG» معناها ما وصلتكش التصويرة: كان السؤال يتعلّق بالشاشة قول بالواضح إنو رؤية الشاشة مسكّرة توا ولازم يشعّلها من إعدادات الوصول (Accessibility)، وما تقولش «لا» برك.
 - كي تجيك تصويرة شاشة: هي الشاشة اللي أيمن يشوف فيها توا. جاوب مباشرة على سؤالو. ما توصفش الشاشة كاملة إلا كان طلب. إذا السؤال ما عندو حتى علاقة بالشاشة، تجاهلها.
-- إنت ذكي برشا: خمّم خطوة بخطوة في راسك قبل ما تجاوب، أما الجواب يكون قصير، دقيق وصحيح. كي تلزمك معلومة جديدة (أخبار، أسعار، طقس، نتائج) استعمل البحث في Google إذا موجود.
+- إنت ذكي برشا: خمّم خطوة بخطوة في راسك قبل ما تجاوب، أما الجواب يكون قصير، دقيق وصحيح. كي تلزمك معلومة جديدة (أخبار، أسعار، طقس، نتائج) استعمل البحث في الإنترنت إذا موجود.
 - احكي بنفس لغة أيمن: إذا حكى بالتونسي جاوب بالتونسي، بالعربي الفصحى جاوب بالفصحى، بالفرنسي ولا الإنقليزي جاوب بيها.
 - إذا طلب منك تتحوّل لحيوان (قطوس، باندا، بطريق، أرنب، دب) ولا يرجعك كيف ما كنت، زيد في آخر "reply" الوسم [animal:cat|panda|penguin|bunny|bear] ولا [animal:none] باش ترجع، وقول جملة فرحانة قصيرة.
 - "topic" واحد من: ${TOPICS.joinToString(", ")} ولا "none" (موضوع الحديث إذا واضح).
@@ -39,9 +39,15 @@ object SystemPrompt {
 """.trim()
 
     /** Live context appended to the system prompt (spec §10.4). */
-    fun withContext(base: String, nowTunis: String, facts: List<String>, foregroundApp: String?): String = buildString {
-        append(base)
-        append("\n\n[سياق توا]\n")
+    fun withContext(base: String, nowTunis: String, facts: List<String>, foregroundApp: String?): String =
+        join(base, liveContext(nowTunis, facts, foregroundApp))
+
+    /** Persona + live context in one prompt (Gemini); Claude gets them as two system blocks (the first one cached). */
+    fun join(persona: String, live: String) = "$persona\n\n$live"
+
+    /** The part of the prompt that changes every message: time in Tunis, the open app, the facts about Ayman. */
+    fun liveContext(nowTunis: String, facts: List<String>, foregroundApp: String?): String = buildString {
+        append("[سياق توا]\n")
         append("- الوقت في تونس: ").append(nowTunis).append('\n')
         append("- صاحب التليفون: أيمن (أيمون)، من تونس.\n")
         if (!foregroundApp.isNullOrBlank()) append("- التطبيق المفتوح قدّامو: ").append(foregroundApp).append('\n')

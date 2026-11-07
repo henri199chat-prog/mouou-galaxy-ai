@@ -11,22 +11,23 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * The Gemini key, encrypted with AES-GCM by a key that never leaves the Android Keystore (alias
- * `tb_gemini`, spec §10.8). Only the ciphertext is in private prefs; allowBackup=false keeps it off backups.
+ * An API key, encrypted with AES-GCM by a key that never leaves the Android Keystore (Gemini: alias
+ * `tb_gemini`, spec §10.8; Claude since 2.6.0: `tb_claude`). Only the ciphertext is in private prefs;
+ * allowBackup=false keeps it off backups.
  */
-class KeyVault(context: Context) {
+class KeyVault(context: Context, private val alias: String = GEMINI_ALIAS, private val pref: String = GEMINI_PREF) {
     private val prefs = context.getSharedPreferences("brain", Context.MODE_PRIVATE)
 
     fun save(rawKey: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
-        val ct = cipher.doFinal(KeySanitizer.clean(rawKey).toByteArray(Charsets.UTF_8))
+        val ct = cipher.doFinal(ClaudeKey.clean(rawKey).toByteArray(Charsets.UTF_8))
         val stored = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(ct, Base64.NO_WRAP)
-        prefs.edit().putString(PREF, stored).apply()
+        prefs.edit().putString(pref, stored).apply()
     }
 
     fun load(): String? {
-        val stored = prefs.getString(PREF, null) ?: return null
+        val stored = prefs.getString(pref, null) ?: return null
         return runCatching {
             val (iv, ct) = stored.split(":").map { Base64.decode(it, Base64.NO_WRAP) }
             val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -35,16 +36,16 @@ class KeyVault(context: Context) {
         }.getOrNull()
     }
 
-    fun has() = prefs.contains(PREF)
+    fun has() = prefs.contains(pref)
 
-    fun clear() = prefs.edit().remove(PREF).apply()
+    fun clear() = prefs.edit().remove(pref).apply()
 
     private fun secretKey(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         gen.init(
-            KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
@@ -53,10 +54,13 @@ class KeyVault(context: Context) {
         return gen.generateKey()
     }
 
-    private companion object {
-        const val ALIAS = "tb_gemini"
-        const val PREF = "gemini_key"
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
+    companion object {
+        const val GEMINI_ALIAS = "tb_gemini"
+        const val GEMINI_PREF = "gemini_key"
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+
+        /** Claude's key: its own Keystore key and pref, so clearing one never touches the other. */
+        fun claude(context: Context) = KeyVault(context, "tb_claude", "claude_key")
     }
 }
 

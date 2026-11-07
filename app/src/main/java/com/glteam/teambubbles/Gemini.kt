@@ -212,13 +212,18 @@ object KeySanitizer {
 
 /** Why a message got no answer, with the Darija line Mouou says (spec §10.3). */
 enum class BrainError(val darija: String) {
-    NO_KEY("باش نفهمك ونجاوبك لازمني مفتاح Gemini (مجاني) في الإعدادات أيمون"),
+    NO_KEY("باش نفهمك ونجاوبك لازمني مفتاح Claude ولا Gemini في الإعدادات أيمون"),
     BAD_KEY("مفتاح Gemini موش صالح ولا تسكّر، بدّلو في الإعدادات أيمون"),
     OFFLINE("ما نجمتش نوصل للسيرفر، ثبّت الإنترنت أيمون"),
     TIMEOUT("السيرفر طوّل برشا وما جاوبش، عاود أيمون"),
     QUOTA("كمّلنا الحصّة المجانية متاع Gemini توا، استنى دقيقة وعاود"),
-    SERVER("سيرفر Gemini فيه مشكل توا، عاود بعد شوية"),
+    SERVER("السيرفر فيه مشكل توا، عاود بعد شوية"),
     NO_MODEL("موديل Gemini موش متوفّر للمفتاح هذا، شوف سجلّ الأخطاء"),
     EMPTY("Gemini رجّع جواب فارغ، عاود سؤالك أيمون"),
     BLOCKED("Gemini رفض يجاوب على هذا، جرّب بطريقة أخرى"),
+    // 2.6.0: Claude is the main brain; these show only when Claude fails AND there is no Gemini key to fall back on.
+    CLAUDE_BAD_KEY("مفتاح Claude موش صالح، بدّلو في الإعدادات أيمون"),
+    CLAUDE_NO_CREDIT("رصيد Claude كمل أيمون: زيد رصيد في platform.claude.com ولا حطّ مفتاح Gemini احتياط"),
+    CLAUDE_BUSY("Claude مشغول برشا توا، عاود بعد شوية"),
+    CLAUDE_REFUSED("Claude ما حبّش يجاوب على هذا، جرّب بطريقة أخرى"),
 }

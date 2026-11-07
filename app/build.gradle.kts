@@ -23,8 +23,8 @@ android {
         applicationId = "com.glteam.teambubbles"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "2.5.1"
+        versionCode = 31
+        versionName = "2.6.0"
     }
 
     signingConfigs {
@@ -80,6 +80,11 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Claude (Anthropic) is Mouou's main brain since 2.6.0 (Ayman, 2026-11-07); Gemini stays the fallback.
+    implementation("com.anthropic:anthropic-java:3.6.0")
+    // the SDK's JSON layer would bring kotlin-reflect 1.9 next to Kotlin 2.2: keep reflection on the same version
+    implementation("org.jetbrains.kotlin:kotlin-reflect:2.2.21")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.json:json:20240303") // real org.json in JVM tests (android.jar only has stubs)
 }

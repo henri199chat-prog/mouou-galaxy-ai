@@ -41,7 +41,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Settings home (Arabic RTL, dark space). Phase 1: permissions, island, auto-hide and the brain (Gemini). */
+/** Settings home (Arabic RTL, dark space): permissions, island, auto-hide and the brain (Claude first, Gemini fallback). */
 class MainActivity : ComponentActivity() {
 
     private var canOverlay by mutableStateOf(false)
@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private var side by mutableStateOf(PillSide.RIGHT)
     private val prefs by lazy { IslandPrefs(this) }
     private val vault by lazy { KeyVault(this) }
+    private val claudeVault by lazy { KeyVault.claude(this) }
     private val brainSettings by lazy { BrainSettings(this) }
     private var brain by mutableStateOf(BrainUi())
 
@@ -101,9 +102,7 @@ class MainActivity : ComponentActivity() {
                     onKeyInput = { brain = brain.copy(keyInput = it) },
                     onToggleShow = { brain = brain.copy(showKey = !brain.showKey) },
                     onPaste = {
-                        val clip = getSystemService(ClipboardManager::class.java)?.primaryClip
-                        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
-                        brain = brain.copy(keyInput = KeySanitizer.clean(text))
+                        brain = brain.copy(keyInput = KeySanitizer.clean(clipboardText()))
                     },
                     onSave = ::saveKey,
                     onTest = ::testKey,
@@ -114,6 +113,11 @@ class MainActivity : ComponentActivity() {
                         brain = brain.copy(factsCount = 0)
                     },
                     onToggleLog = { brain = brain.copy(showLog = !brain.showLog, log = DebugLog.text()) },
+                    onClaudeInput = { brain = brain.copy(claudeInput = it) },
+                    onClaudeToggleShow = { brain = brain.copy(claudeShow = !brain.claudeShow) },
+                    onClaudePaste = { brain = brain.copy(claudeInput = ClaudeKey.clean(clipboardText())) },
+                    onClaudeSave = ::saveClaudeKey,
+                    onClaudeTest = ::testClaudeKey,
                 ),
             )
         }
@@ -133,11 +137,41 @@ class MainActivity : ComponentActivity() {
         if (micOk) IslandService.micReady(this) // settings visible = Android allows the microphone service type now
         brain = brain.copy(
             keySaved = vault.has(),
+            claudeSaved = claudeVault.has(),
             useSearch = brainSettings.useSearch,
             attachScreen = brainSettings.attachScreen,
             factsCount = brainSettings.facts().all.size,
             models = brainSettings.models,
         )
+    }
+
+    private fun clipboardText(): String {
+        val clip = getSystemService(ClipboardManager::class.java)?.primaryClip
+        return clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
+    }
+
+    private fun saveClaudeKey() {
+        val key = ClaudeKey.clean(brain.claudeInput)
+        if (key.isEmpty()) return
+        if (ClaudeKey.isGeminiKey(key)) {
+            brain = brain.copy(claudeResult = "هذا مفتاح Gemini موش Claude! حطّو لوطة في خانة Gemini. مفتاح Claude يبدا بـ sk-ant-")
+            return
+        }
+        claudeVault.save(key)
+        brain = brain.copy(claudeInput = "", claudeSaved = true, claudeResult = "تسجّل ✅ (${ClaudeKey.describe(key)}). اضغط «اختبار».")
+    }
+
+    /** Tests the typed Claude key (saving it) or the saved one: free model check, then a tiny paid ping. */
+    private fun testClaudeKey() {
+        val typed = ClaudeKey.clean(brain.claudeInput)
+        if (typed.isNotEmpty() && !ClaudeKey.isGeminiKey(typed)) claudeVault.save(typed)
+        val key = typed.ifEmpty { claudeVault.load().orEmpty() }
+        brain = brain.copy(claudeTesting = true, claudeInput = "", claudeSaved = claudeVault.has(), claudeResult = "نجرّب…")
+        Thread {
+            val r = runCatching { ClaudeBrain(SdkClaudeTransport(), DebugLog::add).testKey(key) }
+                .getOrElse { ClaudeBrain.KeyTest(false, "صار مشكل: ${it.javaClass.simpleName}") }
+            runOnUiThread { brain = brain.copy(claudeTesting = false, claudeResult = r.summary) }
+        }.start()
     }
 
     private fun saveKey() {
@@ -297,6 +331,11 @@ data class BrainUi(
     val factsCount: Int = 0,
     val showLog: Boolean = false,
     val log: String = "",
+    val claudeInput: String = "",
+    val claudeShow: Boolean = false,
+    val claudeSaved: Boolean = false,
+    val claudeTesting: Boolean = false,
+    val claudeResult: String = "",
 )
 
 class BrainActions(
@@ -309,13 +348,41 @@ class BrainActions(
     val onAttachScreen: (Boolean) -> Unit,
     val onClearFacts: () -> Unit,
     val onToggleLog: () -> Unit,
+    val onClaudeInput: (String) -> Unit,
+    val onClaudeToggleShow: () -> Unit,
+    val onClaudePaste: () -> Unit,
+    val onClaudeSave: () -> Unit,
+    val onClaudeTest: () -> Unit,
 )
 
-/** Spec §16 section 2 «العقل (Gemini)»: key field, paste, show/hide, save, test, privacy note, search, facts, log. */
+/**
+ * Spec §16 section 2 «العقل», since 2.6.0 in two parts: Claude Sonnet (main) and Gemini (free fallback), each with
+ * key field, paste, show/hide, save, test; then the privacy note, search, screen, facts and the debug log.
+ */
 @Composable
 private fun BrainSection(ui: BrainUi, a: BrainActions) {
     val grey = Color(0xFF8E8E96)
-    Text("🧠 العقل (Gemini)", color = Color.White, fontSize = 18.sp)
+    Text("🧠 العقل", color = Color.White, fontSize = 18.sp)
+    Text("${Claude.LABEL} — العقل الأساسي", color = Color.White, fontSize = 15.sp)
+    Text(
+        if (ui.claudeSaved) "✅ فما مفتاح Claude متسجّل" else "مفتاح Claude من platform.claude.com ← API Keys (خلاص بالرصيد)",
+        color = if (ui.claudeSaved) Color(0xFF39FF88) else grey, fontSize = 13.sp,
+    )
+    OutlinedTextField(
+        value = ui.claudeInput,
+        onValueChange = a.onClaudeInput,
+        label = { Text(if (ui.claudeSaved) "مفتاح Claude جديد (اختياري)" else "مفتاح Claude (sk-ant-…)") },
+        singleLine = true,
+        visualTransformation = if (ui.claudeShow) VisualTransformation.None else PasswordVisualTransformation(),
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = a.onClaudePaste) { Text("لصق") }
+        OutlinedButton(onClick = a.onClaudeToggleShow) { Text(if (ui.claudeShow) "خبّي" else "ورّي") }
+        Button(onClick = a.onClaudeSave) { Text("حفظ") }
+        Button(onClick = a.onClaudeTest, enabled = !ui.claudeTesting) { Text("اختبار") }
+    }
+    if (ui.claudeResult.isNotEmpty()) Text(ui.claudeResult, color = Color.White, fontSize = 13.sp)
+    Text("Gemini — احتياط مجاني (يجاوب كي Claude ما ينجمش)", color = Color.White, fontSize = 15.sp)
     Text(
         if (ui.keySaved) "✅ فما مفتاح متسجّل" else "⛔ ما فماش مفتاح: خوذ مفتاح مجاني من aistudio.google.com وحطّو هنا",
         color = if (ui.keySaved) Color(0xFF39FF88) else Color(0xFFFF9F1C), fontSize = 14.sp,
@@ -335,16 +402,16 @@ private fun BrainSection(ui: BrainUi, a: BrainActions) {
     }
     if (ui.result.isNotEmpty()) Text(ui.result, color = Color.White, fontSize = 13.sp)
     if (ui.models.isNotEmpty()) Text("الموديلات: " + ui.models.joinToString(" ← "), color = grey, fontSize = 12.sp)
-    Text("🔒 المفتاح يتخزّن مشفّر في الهاتف برك (Android Keystore)، وما يتبعث كان لـ Google.", color = grey, fontSize = 12.sp)
+    Text("🔒 المفاتيح يتخزّنو مشفّرين في الهاتف برك (Android Keystore): مفتاح Claude ما يتبعث كان لـ Anthropic، ومفتاح Gemini كان لـ Google.", color = grey, fontSize = 12.sp)
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Switch(checked = ui.useSearch, onCheckedChange = a.onSearch)
-        Text("يستعمل البحث في Google للأخبار والأسعار والطقس", color = Color.White, fontSize = 14.sp)
+        Text("يستعمل البحث في الإنترنت للأخبار والأسعار والطقس", color = Color.White, fontSize = 14.sp)
     }
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Switch(checked = ui.attachScreen, onCheckedChange = a.onAttachScreen)
         Text("👁 يشوف الشاشة مع كل سؤال (يلزم «الشاشة» مشعّلة)", color = Color.White, fontSize = 14.sp)
     }
-    Text("التصويرة تتبعث مع سؤالك برك لـ Google، وما تتسجّلش في الهاتف.", color = grey, fontSize = 12.sp)
+    Text("التصويرة تتبعث مع سؤالك برك (لـ Anthropic، ولا لـ Google كي يجاوب Gemini)، وما تتسجّلش في الهاتف.", color = grey, fontSize = 12.sp)
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("حاجات يعرفها عليك: ${ui.factsCount}", color = Color.White, fontSize = 14.sp)
         if (ui.factsCount > 0) OutlinedButton(onClick = a.onClearFacts) { Text("امسحهم") }

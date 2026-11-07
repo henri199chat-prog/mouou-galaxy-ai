@@ -248,6 +248,14 @@ class IslandView(context: Context) : View(context) {
         kick()
     }
 
+    private var bloomAt = 0L
+
+    /** 2.6.0: an answer arrived — the glow behind Mouou lights up for a moment («aha»), then settles. */
+    fun bloom() {
+        bloomAt = SystemClock.uptimeMillis()
+        kick()
+    }
+
     /** After a reply arrives Mouou looks at it for a moment (up and to his right). */
     fun glanceAtReply() {
         replyGlanceUntil = SystemClock.uptimeMillis() + REPLY_GLANCE_MS
@@ -385,13 +393,13 @@ class IslandView(context: Context) : View(context) {
         val mascotCy = lerp(pill.centerY.toFloat(), card.centerY.toFloat(), travel)
         val mascotH = lerp(idleMascotH, MASCOT_DP * density / 1.25f, travel)
 
-        drawCardGlow(canvas, mascotCx, mascotCy, pc)
+        drawCardGlow(canvas, mascotCx, mascotCy, pc, GlowBloom.amount(now - bloomAt))
         drawStars(canvas, now, pc)
         drawMascot(canvas, mascotCx, mascotCy, mascotH, now)
         canvas.restore()
     }
 
-    private fun drawCardGlow(canvas: Canvas, cx: Float, cy: Float, p: Float) {
+    private fun drawCardGlow(canvas: Canvas, cx: Float, cy: Float, p: Float, bloom: Float) {
         val r = card.width * 0.62f
         if (r <= 0f) return
         if (r != cardGlowRadius) {
@@ -406,7 +414,13 @@ class IslandView(context: Context) : View(context) {
         cardGlowPaint.alpha = (255 * p).toInt()
         canvas.save()
         canvas.translate(cx, cy)
+        if (bloom > 0f) canvas.scale(1f + BLOOM_GROW * bloom, 1f + BLOOM_GROW * bloom) // grows a little…
         canvas.drawCircle(0f, 0f, r, cardGlowPaint)
+        if (bloom > 0.01f) {
+            // …and brightens: the same gradient once more on top (no new object, no allocation)
+            cardGlowPaint.alpha = (255 * p * BLOOM_LIGHT * bloom).toInt()
+            canvas.drawCircle(0f, 0f, r, cardGlowPaint)
+        }
         canvas.restore()
     }
 
@@ -691,6 +705,8 @@ class IslandView(context: Context) : View(context) {
     }
 
     private companion object {
+        private const val BLOOM_GROW = 0.14f
+        private const val BLOOM_LIGHT = 0.6f
         const val IDLE_FRAME_MS = 33L
         const val LONG_PRESS_MS = 480L
         const val MAX_DRAG_STRETCH = 0.12f

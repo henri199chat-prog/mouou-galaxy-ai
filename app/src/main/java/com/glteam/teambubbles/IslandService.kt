@@ -84,8 +84,11 @@ class IslandService : Service(), IslandView.Listener {
     // Brain (spec §10): one background thread, one request per message.
     private val brainThread = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val brain = Brain(OkHttpTransport(), log = DebugLog::add)
+    // 2.6.0: Claude Sonnet is the main brain, Gemini the automatic fallback (Ayman's choice, 2026-11-07).
+    private val mind = Mind(ClaudeBrain(SdkClaudeTransport(), DebugLog::add), brain, DebugLog::add)
     private val memory = ConvoMemory()
     private lateinit var vault: KeyVault
+    private lateinit var claudeVault: KeyVault
     private lateinit var brainSettings: BrainSettings
     private var busy = false
 
@@ -139,6 +142,7 @@ class IslandService : Service(), IslandView.Listener {
         prefs = IslandPrefs(this)
         voice = VoiceListener(this, VoiceCallbacks())
         vault = KeyVault(this)
+        claudeVault = KeyVault.claude(this)
         brainSettings = BrainSettings(this)
         current = this
         showIsland()
@@ -752,6 +756,7 @@ class IslandService : Service(), IslandView.Listener {
         handler.postDelayed(thinkingDots, if (capture?.jpegBase64 != null) 450 else 0)
         island.setThinking(true)
         val key = vault.load()
+        val claudeKey = claudeVault.load()
         val models = brainSettings.models
         val useSearch = brainSettings.useSearch
         val facts = brainSettings.facts()
@@ -762,11 +767,12 @@ class IslandService : Service(), IslandView.Listener {
             SystemPrompt.userTurn(question, screenAvailable = false)
         }
         val image = capture?.jpegBase64 // kept in memory for this one request only, never stored (spec §9)
-        val prompt = SystemPrompt.withContext(SystemPrompt.mouou(), nowInTunis(), facts.all, foregroundApp)
+        val persona = SystemPrompt.mouou()
+        val live = SystemPrompt.liveContext(nowInTunis(), facts.all, foregroundApp)
         brainThread.execute {
-            val result = runCatching { brain.ask(key, models, prompt, history, userTurn, useSearch, image) }
-                .getOrElse { e -> DebugLog.add("brain crash: ${e.javaClass.simpleName}"); Brain.Result.Failure(BrainError.SERVER) }
-            handler.post { showResult(question, result, facts) }
+            val outcome = runCatching { mind.ask(claudeKey, key, models, persona, live, history, userTurn, useSearch, image) }
+                .getOrElse { e -> DebugLog.add("brain crash: ${e.javaClass.simpleName}"); Mind.Outcome(Brain.Result.Failure(BrainError.SERVER), false) }
+            handler.post { showResult(question, outcome.result, facts, outcome.note) }
         }
     }
 
@@ -787,7 +793,7 @@ class IslandService : Service(), IslandView.Listener {
         collapseCard()
     }
 
-    private fun showResult(question: String, result: Brain.Result, facts: Facts) {
+    private fun showResult(question: String, result: Brain.Result, facts: Facts, note: String = "") {
         if (root == null) return
         busy = false
         handler.removeCallbacks(thinkingDots)
@@ -795,15 +801,17 @@ class IslandService : Service(), IslandView.Listener {
         when (result) {
             is Brain.Result.Answer -> {
                 val current = brainSettings.models
-                if (current.isNotEmpty()) brainSettings.models = brain.promote(current, result.model)
+                // only a Gemini model moves up the Gemini list ("claude-…" in it would be a wasted 404 later)
+                if (current.isNotEmpty()) brainSettings.models = Mind.promoteGemini(current, result.model)
                 memory.add(true, question) // history: text only, no screen text and no image (spec §10.4)
                 memory.add(false, result.reply.rawJson.ifBlank { result.reply.reply })
                 if (result.reply.remember.isNotBlank() && facts.remember(result.reply.remember)) brainSettings.saveFacts(facts)
                 reply.setTextColor(0xFFFFFFFF.toInt())
-                reply.text = result.reply.reply
+                reply.text = if (note.isBlank()) result.reply.reply else withNote(result.reply.reply, note)
                 val face = Expressions.fromEmotion(result.reply.emotion.ifBlank { result.reply.mood })
                 island.setExpression(face) // the brain's emotion replaces the word reaction and stays while answering
                 if (Expressions.isHappy(face)) island.hop()
+                island.bloom() // the glow behind him lights up: the answer is here
             }
             is Brain.Result.Failure -> {
                 island.setExpression(Expression.WORRIED) // error face
@@ -815,6 +823,15 @@ class IslandService : Service(), IslandView.Listener {
         reply.scrollTo(0, 0)
         island.glanceAtReply()
         restartIdleTimer()
+    }
+
+    /** The answer, then a small grey line when Claude needs Ayman's attention (no credit, bad key). */
+    private fun withNote(answer: String, note: String): CharSequence {
+        val s = android.text.SpannableString("$answer\n($note)")
+        val start = answer.length + 1
+        s.setSpan(android.text.style.ForegroundColorSpan(0xFF8E8E96.toInt()), start, s.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        s.setSpan(android.text.style.RelativeSizeSpan(0.8f), start, s.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return s
     }
 
     private fun nowInTunis(): String {
